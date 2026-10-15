@@ -5,6 +5,7 @@ on:
       - 'backends/**'
       - 'src/**'
       - 'parity.flow'
+      - 'grad_parity.flow'
       - 'train.flow'
       - 'smoke.flow'
       - 'scripts/generate-fixture.py'
@@ -37,7 +38,7 @@ jobs:
         run: ../flow/flow run smoke.flow
       - name: Generate deterministic synthetic CIFAR-format records
         run: python scripts/generate-fixture.py
-      - name: Create genuine native Flow checkpoint and compare logits
+      - name: Create Flow checkpoint and compare deterministic logits
         env:
           HLB_TRAIN_LIMIT: '16'
           HLB_EVAL_LIMIT: '8'
@@ -48,7 +49,9 @@ jobs:
         run: |
           ../flow/flow run train.flow
           ../flow/flow run parity.flow > flow-parity.txt
+          ../flow/flow run grad_parity.flow > flow-grads.txt
           python backends/mlx_backend.py parity --checkpoint hlb-ema.bin --flow-logits flow-parity.txt
+          python backends/mlx_backend.py grad-parity --checkpoint hlb-ema.bin --flow-gradients flow-grads.txt
       - name: Apple MLX checkpoint inference
         run: python backends/mlx_backend.py infer --checkpoint hlb-ema.bin --limit 8 --batch 2
       - name: Apple MLX autograd fine-tune and Flow-compatible checkpoint roundtrip
@@ -62,6 +65,7 @@ jobs:
           name: mlx-flow-parity
           path: |
             flow-parity.txt
+            flow-grads.txt
             hlb-ema.bin
             mlx-finetuned.bin
           if-no-files-found: ignore
