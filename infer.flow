@@ -1,0 +1,93 @@
+# Evaluate a previously saved Flow model on CIFAR-10 binary test records.
+# Reads model tensors AND train-only channel normalisation from the v2
+# checkpoint; no PyTorch or external ML inference runtime.
+#
+#   flow run infer.flow
+#   HLB_WIDTH=8 HLB_EVAL_LIMIT=256 flow run infer.flow
+import "src/core.flow"
+import "src/data.flow"
+import "src/checkpoint.flow"
+
+extern {
+    function printf(fmt: string, value: f64) -> i32
+}
+
+function inference_min(a: i32, b: i32) -> i32 {
+    if a < b { return a }
+    return b
+}
+
+function main() -> i32 {
+    let width: i32 = env_int("HLB_WIDTH",8)
+    let limit: i32 = env_int("HLB_EVAL_LIMIT",256)
+    let batch_size: i32 = env_int("HLB_BATCH",8)
+    if width < 2 or width > 64 or batch_size < 1 or batch_size > 1024 {
+        println("Invalid HLB_WIDTH / HLB_BATCH")
+        return 2
+    }
+
+    let m: Model = model_new(width)
+    let stats: Statistics = Statistics { mean: alloc_f32(3), invstd: alloc_f32(3) }
+    if not checkpoint_load("hlb-ema.bin",m,width,stats) {
+        println("No compatible hlb-ema.bin checkpoint; train a model first")
+        model_free(m)
+        statistics_free(stats)
+        return 2
+    }
+    let dataset: Dataset = load_test(limit)
+    if dataset.count <= 0 {
+        println("Missing CIFAR-10 binary test records; run scripts/download-data.sh")
+        model_free(m)
+        statistics_free(stats)
+        dataset_free(dataset)
+        return 2
+    }
+    normalize_dataset(dataset,stats)
+    let order: ptr<i32> = shuffled_indices(dataset.count)
+
+    let start_time: i64 = flow_rt_monotonic_ns()
+    let mut correct: i32 = 0
+    let mut start: i32 = 0
+    while start < dataset.count {
+        let count: i32 = inference_min(batch_size,dataset.count-start)
+        let batch: Batch = batch_from_dataset(dataset,order,start,count,false,false)
+        let forward: ModelCache = model_forward(m,batch.images,false)
+
+        # Match HLB's mean-logit evaluation under horizontal reflection.
+        let flipped: Tensor = tensor(count,3,32,32)
+        for b in 0 to count {
+            for ch in 0 to 3 {
+                for y in 0 to 32 {
+                    for x in 0 to 32 {
+                        flipped.data[tensor_index(flipped,b,ch,y,x)] =
+                            batch.images.data[tensor_index(batch.images,b,ch,y,31-x)]
+                    }
+                }
+            }
+        }
+        let other: ModelCache = model_forward(m,flipped,false)
+        for i in 0 to count*CLASSES {
+            forward.logits.data[i] = 0.5*(forward.logits.data[i]+other.logits.data[i])
+        }
+
+        correct = correct + predictions(forward.logits,batch.labels)
+        model_cache_free(forward)
+        model_cache_free(other)
+        tensor_free(flipped)
+        batch_free(batch)
+        start = start+count
+    }
+    let end_time: i64 = flow_rt_monotonic_ns()
+    print("examples "); println(dataset.count)
+    print("correct "); println(correct)
+    print("accuracy ")
+    let _acc: i32 = printf("%.6f\n",(correct as f64)/(dataset.count as f64))
+    print("CPU inference seconds ")
+    let _seconds: i32 = printf("%.5f\n",((end_time-start_time) as f64)/1000000000.0)
+
+    free(order as ptr<f32>)
+    dataset_free(dataset)
+    statistics_free(stats)
+    model_free(m)
+    return 0
+}
