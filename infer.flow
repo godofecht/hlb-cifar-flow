@@ -21,6 +21,7 @@ function main() -> i32 {
     let width: i32 = env_int("HLB_WIDTH",8)
     let limit: i32 = env_int("HLB_EVAL_LIMIT",256)
     let batch_size: i32 = env_int("HLB_BATCH",8)
+    let dump_predictions: bool = env_int("HLB_DUMP_PREDICTIONS",0) == 1
     if width < 2 or width > 64 or batch_size < 1 or batch_size > 1024 {
         println("Invalid HLB_WIDTH / HLB_BATCH")
         return 2
@@ -70,6 +71,20 @@ function main() -> i32 {
             logits.data[i] = 0.5*(logits.data[i]+other.data[i])
         }
 
+        if dump_predictions {
+            for row in 0 to count {
+                let mut best: i32 = 0
+                for cls in 1 to CLASSES {
+                    if logits.data[row*CLASSES+cls] > logits.data[row*CLASSES+best] {
+                        best = cls
+                    }
+                }
+                print("PRED ")
+                print(start+row)
+                print(" ")
+                println(best)
+            }
+        }
         correct = correct + predictions(logits,batch.labels)
         tensor_free(logits)
         tensor_free(other)
