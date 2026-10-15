@@ -1,0 +1,25 @@
+name: Flow native CNN reference
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  native-flow-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout implementation
+        uses: actions/checkout@v4
+      - name: Prepare C toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc clang make
+      - name: Checkout pinned Flow compiler
+        run: |
+          git clone --depth=1 https://github.com/flooooooooooow/flow.git ../flow
+          cd ../flow
+          git fetch --depth=1 origin 69c8ec453941a1738ac06343bdcb440025610c67
+          git checkout 69c8ec453941a1738ac06343bdcb440025610c67
+      - name: Compile and exercise all native Flow numerical primitives
+        run: ../flow/flow run tests/smoke.flow
+      - name: Compile complete training entrypoint
+        run: ../flow/flow compile train.flow
