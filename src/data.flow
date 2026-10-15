@@ -196,6 +196,9 @@ function reflect32(i: i32) -> i32 {
 
 function batch_from_dataset(d: Dataset, order: ptr<i32>, start: i32, count: i32, training: bool, cutmix: bool) -> Batch {
     let images: Tensor = tensor(count,3,32,32)
+    # Image-specific shifts, reversals and CutMix are not automatically
+    # label-preserving for language, speech spectrograms or sensor sequences.
+    let allow_spatial: bool = env_int("HLB_DISABLE_SPATIAL_AUGMENT",0) != 1
     let targets: ptr<f32> = alloc_f32(count*CLASSES)
     let labels: ptr<i32> = alloc_i32(count)
     for b in 0 to count {
@@ -205,7 +208,7 @@ function batch_from_dataset(d: Dataset, order: ptr<i32>, start: i32, count: i32,
         let mut dy: i32 = 0
         let mut dx: i32 = 0
         let mut flip: bool = false
-        if training {
+        if training and allow_spatial {
             dy = random_index(5) - 2
             dx = random_index(5) - 2
             flip = random01() < 0.5
@@ -223,7 +226,7 @@ function batch_from_dataset(d: Dataset, order: ptr<i32>, start: i32, count: i32,
     }
     # HLB patches are 3x3 for the last six epochs, applied to a
     # random batch partner, with soft labels proportional to area.
-    if cutmix and count > 1 {
+    if cutmix and allow_spatial and count > 1 {
         # Snapshot both images and labels before mixing: partners must not
         # depend on which samples were processed earlier in this batch.
         let old_images: Tensor = tensor(count,3,32,32)
