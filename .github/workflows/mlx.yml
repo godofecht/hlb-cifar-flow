@@ -58,6 +58,8 @@ jobs:
         run: |
           python backends/mlx_backend.py train --checkpoint hlb-current.bin --limit 16 --holdout 4 --batch 2 --epochs 1 --lr-scale 0.01 --output mlx-finetuned.bin
           python backends/mlx_backend.py infer --checkpoint mlx-finetuned.bin --limit 8 --batch 2
+          HLB_USE_MLX_CHECKPOINT=1 HLB_WIDTH=2 ../flow/flow run parity.flow > flow-parity-mlxtrained.txt
+          python backends/mlx_backend.py parity --checkpoint mlx-finetuned.bin --flow-logits flow-parity-mlxtrained.txt
       - name: Upload parity proof artefacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -66,6 +68,7 @@ jobs:
           path: |
             flow-parity.txt
             flow-grads.txt
+            flow-parity-mlxtrained.txt
             hlb-ema.bin
             mlx-finetuned.bin
           if-no-files-found: ignore
