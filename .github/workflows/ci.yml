@@ -35,4 +35,17 @@ jobs:
           HLB_BATCH: "2"
           HLB_EPOCHS: "1"
           HLB_WHITEN_EXAMPLES: "16"
+        run: |
+          ../flow/flow run train.flow
+          test -s hlb-current.bin
+          test -s hlb-ema.bin
+
+      - name: Exercise validation holdout without test-set leakage
+        env:
+          HLB_TRAIN_LIMIT: "16"
+          HLB_VAL_HOLDOUT: "4"
+          HLB_WIDTH: "2"
+          HLB_BATCH: "2"
+          HLB_EPOCHS: "1"
+          HLB_WHITEN_EXAMPLES: "12"
         run: ../flow/flow run train.flow
