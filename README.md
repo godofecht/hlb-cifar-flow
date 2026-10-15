@@ -22,9 +22,11 @@ Upstream research reference: [tysam-code/hlb-CIFAR10](https://github.com/tysam-c
 | Objective | Soft-target cross entropy with 0.2 label smoothing |
 | Optimisation | Nesterov SGD, bias/non-bias rates, L2 decay, linear one-cycle learning rate |
 | Evaluation | Horizontal-flip logit averaging, separate EMA weight model |
-| Verification | Finite-difference gradients, pooling adjoint, whitening symmetry, whole-network training smoke |
+| Verification | Finite-difference gradients, convolution reference parity, pooling adjoint, BN running variance, whitening symmetry, checkpoint roundtrip |
+| Checkpoints | Versioned f32 model and train-only RGB normalisation in `hlb-current.bin` and `hlb-ema.bin` |
+| Inference | Standalone `infer.flow` restores EMA checkpoint and evaluates with horizontal-flip test-time augmentation |
 
-The native Flow code is in [src/core.flow](src/core.flow), [src/data.flow](src/data.flow) and [src/whitening.flow](src/whitening.flow). All forward passes and gradient updates are implemented in those files.
+The native Flow code is in [src/core.flow](src/core.flow), [src/data.flow](src/data.flow) and [src/whitening.flow](src/whitening.flow), and [src/checkpoint.flow](src/checkpoint.flow). All forward passes and gradient updates are implemented in those files.
 
 ## Run
 
@@ -34,9 +36,15 @@ Install Flow 2.0 or build its [self-hosted compiler](https://github.com/floooooo
 bash scripts/download-data.sh
 flow run smoke.flow
 flow run train.flow
+flow run infer.flow
+flow run bench.flow
 ```
 
-The default run deliberately uses 256 training and 256 test images, width 8, batch size 8 and 2 epochs. **This is a functional CPU development configuration, not a meaningful CIFAR-10 accuracy benchmark.** The program prints loss, accuracy, EMA accuracy and full CPU training-plus-evaluation time.
+The default run deliberately uses 256 training and 256 test images, width 8, batch size 8 and 2 epochs. **This is a functional CPU development configuration, not a meaningful CIFAR-10 accuracy benchmark.** The program prints loss, accuracy, EMA accuracy and full CPU training-plus-evaluation time. It saves train and EMA checkpoints with the exact input normalisation statistics so `infer.flow` can reload them correctly.
+
+To reserve examples from the **training split** for validation rather than re-evaluating the official test set every epoch, use `HLB_VAL_HOLDOUT=32` (or a larger holdout). The holdout is taken from the end of the loaded training subset; training statistics are computed only over the remaining examples. In this mode the official test split is not loaded. Use this mode for hyperparameter tuning.
+
+`HLB_WHITEN_STRIDE=8` (default) samples a 4×4 grid of 2×2 patches per training image for PCA whitening; `HLB_WHITEN_STRIDE=1` uses all 31×31 overlapping patches, at substantially greater CPU cost. Accumulation is performed in f64, without materializing patch tensors.
 
 To run the entire dataset and HLB-sized channel widths, set:
 
@@ -54,7 +62,7 @@ flow run train.flow
 
 ## What differs from the original
 
-This is a ground-up implementation of the network and training mechanisms, **not a bit-for-bit reproduction of the PyTorch program**. All floating-point computation is currently F32 on CPU, rather than FP16 channels-last using NVIDIA tensor cores. It computes whitening covariance using four representative 2×2 patches per training image rather than all image patches. It uses a conventional EMA evaluation model rather than upstream's additional EMA parameter write-back. The training schedule uses an integer number of epochs, and its learning-rate update uses equivalent mean-loss scaling rather than the upstream summed-loss convention. First-convolution Dirac initialisation does not reproduce the upstream weight-statistic renormalisation.
+This is a ground-up implementation of the network and training mechanisms, **not a bit-for-bit reproduction of the PyTorch program**. All floating-point computation is currently F32 on CPU, rather than FP16 channels-last using NVIDIA tensor cores. It supports exhaustive all-patch whitening with stride 1 or cheaper deterministic grid sampling for smaller experiments. Unlike the upstream per-chunk eigendecomposition-and-average method, it computes a single eigendecomposition of the aggregated covariance. It uses a conventional EMA evaluation model rather than upstream's additional EMA parameter write-back. The training schedule uses an integer number of epochs, and its learning-rate update uses equivalent mean-loss scaling rather than the upstream summed-loss convention. First-convolution Dirac initialisation does not reproduce the upstream weight-statistic renormalisation.
 
 Consequently neither the published **94% in under 6.3 seconds** nor **95.79% in roughly 110 seconds** is claimed or expected here. Those were historical upstream measurements on an A100. This repository needs matched accuracy, CUDA kernels, FP16 numerical testing, proper batching optimisation and reproducible end-to-end timing before comparing speed.
 
@@ -64,7 +72,13 @@ First verify gradient agreement on synthetic small problems with finite differen
 
 Report data preparation, PCA whitening, training and evaluation times **separately**. The original benchmark deliberately does not include all of them in its headline training time.
 
+CI also checks exact checkpoint roundtrips, an opt-in held-out validation partition, and standalone inference after a synthetic training run.
+
 CI additionally generates a **synthetic** CIFAR-binary fixture with `scripts/generate-fixture.py` and performs an end-to-end train/evaluate run. Those generated pixels are not part of the official CIFAR-10 dataset and must never be used for accuracy claims.
+
+### Measured CPU kernel improvement
+
+The Flow-native contiguous convolution kernel is checked against an independent reference implementation for forward and backward parity. In [GitHub Actions run 38766125220](https://github.com/godofecht/hlb-cifar-flow/actions/runs/38766125220), a 2×8×16×16 input with 16 output channels and 3×3 filters took **9.309 ms** with the reference and **2.449 ms** with the optimised kernel over eight iterations (**3.80×** reference/optimised). The reported maximum absolute output error was 0.0 at seven decimal places. Results are hardware/compiler dependent and **are not an end-to-end training speedup**. Run `flow run bench.flow` for repeatable local measurements.
 
 The immediate performance roadmap is batched GEMM/im2col, convolution fusion, activation/BatchNorm fusion, selective rematerialisation, FP16 accumulation, and native Flow-to-CUDA compilation. These are **not** implemented by this repository.
 
