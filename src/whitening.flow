@@ -1,0 +1,120 @@
+# Data-dependent 2x2 patch whitening, 12x12 symmetric eigensolver in Flow.
+# Initial convolution weights: [U diag(1/sqrt(lambda+eps)), -U ...].
+# HLB's PyTorch code computes covariance eigenvectors using torch.linalg.eigh.
+# This implementation estimates the covariance from four deterministic patches
+# per selected training image and diagonalizes it with Jacobi rotations.
+
+function whitening_fit(layer: Conv, d: Dataset, examples: i32) -> void {
+    let mut n: i32 = examples
+    if n > d.count { n = d.count }
+    if n <= 0 { return }
+
+    let mean: ptr<f32> = alloc_f32(12)
+    let covariance: ptr<f32> = alloc_f32(144)
+    let patch: ptr<f32> = alloc_f32(12)
+    let count: f32 = (n * 4) as f32
+
+    for sample in 0 to n {
+        for rep in 0 to 4 {
+            let y: i32 = (sample*7+rep*13) % 31
+            let x: i32 = (sample*11+rep*17) % 31
+            for ch in 0 to 3 {
+                for ky in 0 to 2 {
+                    for kx in 0 to 2 {
+                        let k: i32 = ch*4+ky*2+kx
+                        patch[k] = d.images[sample*3072+ch*1024+(y+ky)*32+x+kx]
+                    }
+                }
+            }
+            for i in 0 to 12 {
+                mean[i] = mean[i] + patch[i]
+                for j in 0 to 12 {
+                    covariance[i*12+j] = covariance[i*12+j] + patch[i]*patch[j]
+                }
+            }
+        }
+    }
+    for i in 0 to 12 { mean[i] = mean[i] / count }
+    for i in 0 to 12 {
+        for j in 0 to 12 {
+            covariance[i*12+j] = covariance[i*12+j] / count - mean[i]*mean[j]
+        }
+    }
+
+    let eigenvectors: ptr<f32> = alloc_f32(144)
+    for i in 0 to 12 { eigenvectors[i*12+i] = 1.0 }
+
+    # Symmetric Jacobi: A <- R^T A R; V <- V R.
+    for iteration in 0 to 240 {
+        let mut p: i32 = 0
+        let mut q: i32 = 1
+        let mut biggest: f32 = 0.0
+        for i in 0 to 12 {
+            for j in i+1 to 12 {
+                let value: f32 = covariance[i*12+j]
+                let mut absolute: f32 = value
+                if absolute < 0.0 { absolute = 0.0-absolute }
+                if absolute > biggest { biggest = absolute; p = i; q = j }
+            }
+        }
+        if biggest < 0.0000001 { break }
+        let app: f32 = covariance[p*12+p]
+        let aqq: f32 = covariance[q*12+q]
+        let apq: f32 = covariance[p*12+q]
+        let tau: f32 = (aqq-app)/(2.0*apq)
+        let mut t: f32 = 0.0
+        if tau >= 0.0 {
+            t = 1.0/(tau+sqrtf(1.0+tau*tau))
+        } else {
+            t = -1.0/(-tau+sqrtf(1.0+tau*tau))
+        }
+        let co: f32 = 1.0/sqrtf(1.0+t*t)
+        let si: f32 = t*co
+        for i in 0 to 12 {
+            if i != p and i != q {
+                let aip: f32 = covariance[i*12+p]
+                let aiq: f32 = covariance[i*12+q]
+                covariance[i*12+p] = co*aip-si*aiq
+                covariance[p*12+i] = covariance[i*12+p]
+                covariance[i*12+q] = si*aip+co*aiq
+                covariance[q*12+i] = covariance[i*12+q]
+            }
+            let vip: f32 = eigenvectors[i*12+p]
+            let viq: f32 = eigenvectors[i*12+q]
+            eigenvectors[i*12+p] = co*vip-si*viq
+            eigenvectors[i*12+q] = si*vip+co*viq
+        }
+        covariance[p*12+p] = app-t*apq
+        covariance[q*12+q] = aqq+t*apq
+        covariance[p*12+q] = 0.0
+        covariance[q*12+p] = 0.0
+    }
+
+    # Descending eigenvalue sort. Eigenvector columns are the PCA filters.
+    let used: ptr<i32> = alloc_i32(12)
+    for out in 0 to 12 {
+        let mut best: i32 = -1
+        for j in 0 to 12 {
+            if used[j] == 0 {
+                if best == -1 or covariance[j*12+j] > covariance[best*12+best] {
+                    best = j
+                }
+            }
+        }
+        used[best] = 1
+        let mut eigenvalue: f32 = covariance[best*12+best]
+        if eigenvalue < 0.0 { eigenvalue = 0.0 }
+        let scale: f32 = 1.0/sqrtf(eigenvalue+0.01)
+        for i in 0 to 12 {
+            let coefficient: f32 = eigenvectors[i*12+best]*scale
+            layer.weight[out*12+i] = coefficient
+            layer.weight[(out+12)*12+i] = 0.0-coefficient
+        }
+    }
+
+    free(used as ptr<f32>)
+    free(eigenvectors)
+    free(mean)
+    free(covariance)
+    free(patch)
+}
