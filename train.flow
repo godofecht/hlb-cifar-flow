@@ -40,7 +40,7 @@ function evaluate(m: Model, d: Dataset, batch_size: i32, horizontal_tta: bool) -
     while start < d.count {
         let n: i32 = min_i32(batch_size,d.count-start)
         let batch: Batch = batch_from_dataset(d,order,start,n,false,false)
-        let forward: ModelCache = model_forward(m,batch.images,false)
+        let logits: Tensor = model_predict(m,batch.images)
         if horizontal_tta {
             let flipped: Tensor = tensor(n,3,32,32)
             for b in 0 to n {
@@ -53,15 +53,15 @@ function evaluate(m: Model, d: Dataset, batch_size: i32, horizontal_tta: bool) -
                     }
                 }
             }
-            let other: ModelCache = model_forward(m,flipped,false)
+            let other: Tensor = model_predict(m,flipped)
             for i in 0 to n*CLASSES {
-                forward.logits.data[i] = 0.5*(forward.logits.data[i]+other.logits.data[i])
+                logits.data[i] = 0.5*(logits.data[i]+other.data[i])
             }
-            model_cache_free(other)
+            tensor_free(other)
             tensor_free(flipped)
         }
-        correct = correct + predictions(forward.logits,batch.labels)
-        model_cache_free(forward)
+        correct = correct + predictions(logits,batch.labels)
+        tensor_free(logits)
         batch_free(batch)
         start = start+n
     }
