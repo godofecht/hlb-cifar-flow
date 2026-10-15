@@ -18,9 +18,22 @@ const SQRT2: f32 = 1.4142135623730951
 const INV_SQRT_2PI: f32 = 0.3989422804014327
 let mut random_state: i64 = 20261015
 
-function random01() -> f32 {
+function random_u31() -> i32 {
     random_state = (random_state * 1103515245 + 12345) % 2147483648
-    return (random_state as f32) / 2147483648.0
+    return random_state as i32
+}
+
+# Integer draw for array indexing; converting a maximal 31-bit integer to
+# f32 can round UP to 1.0, producing an out-of-bounds random index.
+function random_index(n: i32) -> i32 {
+    if n <= 1 { return 0 }
+    return random_u31() % n
+}
+
+function random01() -> f32 {
+    let value: f32 = (random_u31() as f32) / 2147483648.0
+    if value >= 1.0 { return 0.99999988 }
+    return value
 }
 
 function alloc_f32(n: i32) -> ptr<f32> {
