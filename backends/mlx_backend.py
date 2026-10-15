@@ -77,7 +77,8 @@ def write_checkpoint(path: Path, width: int, params: dict[str, mx.array],
         for name, shape in tensor_shapes.items():
             src = running[name] if name in running else params[name]
             arr = np.asarray(src, dtype="<f4")
-            if arr.shape != shape or not np.all(np.isfinite(arr)):
+            expected = (shape[0], shape[2], shape[3], shape[1]) if len(shape) == 4 else shape
+            if arr.shape != expected or not np.all(np.isfinite(arr)):
                 raise ValueError(f"{name}: invalid tensor shape or non-finite data")
             if len(shape) == 4:
                 arr = arr.transpose(0, 3, 1, 2)  # MLX O,K,K,I -> Flow O,I,K,K
