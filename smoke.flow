@@ -299,6 +299,26 @@ function checkpoint_roundtrip_check() -> bool {
     return saved and read_ok and same and rejected
 }
 
+function cached_vs_streaming_inference_check() -> bool {
+    let m: Model = model_new(2)
+    let x: Tensor = tensor(2,3,32,32)
+    for i in 0 to 2*3072 {
+        x.data[i] = ((i*31%239) as f32)*0.002
+    }
+    let cached: ModelCache = model_forward(m,x,false)
+    let streaming: Tensor = model_predict(m,x)
+    let mut max_diff: f32 = 0.0
+    for i in 0 to 2*CLASSES {
+        let difference: f32 = absf(cached.logits.data[i]-streaming.data[i])
+        if difference > max_diff { max_diff = difference }
+    }
+    model_cache_free(cached)
+    tensor_free(streaming)
+    tensor_free(x)
+    model_free(m)
+    return max_diff < 0.000001
+}
+
 function main() -> i32 {
     let a: bool = conv_gradient_check()
     let b: bool = gelu_gradient_check()
@@ -312,6 +332,7 @@ function main() -> i32 {
     let j: bool = augmentation_check()
     let k: bool = running_variance_check()
     let l: bool = checkpoint_roundtrip_check()
+    let m: bool = cached_vs_streaming_inference_check()
     print("conv_gradient "); println(a)
     print("gelu_gradient "); println(b)
     print("batchnorm_gradient "); println(c)
@@ -324,7 +345,8 @@ function main() -> i32 {
     print("cutmix_normalized_labels "); println(j)
     print("pytorch_running_bn_variance "); println(k)
     print("checkpoint_roundtrip "); println(l)
-    if a and b and c and d and e and f and g and h and i and j and k and l {
+    print("cache_free_inference_parity "); println(m)
+    if a and b and c and d and e and f and g and h and i and j and k and l and m {
         println("PASS")
         return 0
     }
