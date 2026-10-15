@@ -1,0 +1,63 @@
+name: Real-modality parity on Apple MLX
+on:
+  push:
+    paths:
+      - 'backends/**'
+      - 'src/**'
+      - 'scripts/convert_modality.py'
+      - 'scripts/compare_inference.py'
+      - 'infer.flow'
+      - '.github/workflows/mlx-modalities.yml'
+  workflow_dispatch:
+
+jobs:
+  identical-predictions:
+    runs-on: macos-15
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        dataset: [fashion-mnist, spoken-digits, uci-har, ag-news]
+    env:
+      HLB_TRAIN_LIMIT: '40'
+      HLB_EVAL_LIMIT: '20'
+      HLB_WIDTH: '2'
+      HLB_BATCH: '4'
+      HLB_EPOCHS: '1'
+      HLB_WHITEN_EXAMPLES: '32'
+      HLB_DUMP_PREDICTIONS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install real-data preprocessing and Apple MLX
+        run: python -m pip install 'mlx>=0.30,<0.34' 'numpy>=1.26,<3'
+      - name: Pin self-hosted Flow compiler
+        run: |
+          git clone --depth=1 https://github.com/flooooooooooow/flow.git ../flow
+          cd ../flow
+          git fetch --depth=1 origin 69c8ec453941a1738ac06343bdcb440025610c67
+          git checkout 69c8ec453941a1738ac06343bdcb440025610c67
+      - name: Convert genuine records to shared classification ABI
+        run: python scripts/convert_modality.py --dataset "${{ matrix.dataset }}" --train 40 --test 20
+      - name: Train native Flow checkpoint from genuine examples
+        run: ../flow/flow run train.flow
+      - name: Run Flow predictions on official dataset test split
+        run: ../flow/flow run infer.flow > flow-infer.txt
+      - name: Run MLX predictions from exactly the same checkpoint and records
+        run: python backends/mlx_backend.py infer --checkpoint hlb-ema.bin --limit 20 --batch 4 > mlx-infer.txt
+      - name: Require exact per-example classification parity
+        run: python scripts/compare_inference.py flow-infer.txt mlx-infer.txt --dataset "${{ matrix.dataset }}"
+      - name: Publish evidence, labels and model details
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlx-modality-${{ matrix.dataset }}
+          path: |
+            data/cifar-10-batches-bin/provenance.json
+            flow-infer.txt
+            mlx-infer.txt
+            parity-result.json
+          if-no-files-found: ignore
+          retention-days: 7
