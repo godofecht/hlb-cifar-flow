@@ -265,21 +265,37 @@ function checkpoint_roundtrip_check() -> bool {
     m.third.norm_b.running_mean[0] = 0.75
     m.third.norm_b.running_var[0] = 1.5
     m.head.weight[12] = -0.333
-    let saved: bool = checkpoint_save("smoke-model.bin",m,2)
+    let stats: Statistics = Statistics { mean: alloc_f32(3), invstd: alloc_f32(3) }
+    stats.mean[0] = 0.125
+    stats.mean[1] = 0.25
+    stats.mean[2] = 0.75
+    stats.invstd[0] = 2.0
+    stats.invstd[1] = 3.0
+    stats.invstd[2] = 4.0
+    let restored_stats: Statistics = Statistics { mean: alloc_f32(3), invstd: alloc_f32(3) }
+    let saved: bool = checkpoint_save("smoke-model.bin",m,2,stats)
     let loaded: Model = model_new(2)
-    let read_ok: bool = checkpoint_load("smoke-model.bin",loaded,2)
+    let read_ok: bool = checkpoint_load("smoke-model.bin",loaded,2,restored_stats)
     let same: bool = loaded.whitening.weight[17] == m.whitening.weight[17] and
         loaded.first.a.weight[0] == m.first.a.weight[0] and
         loaded.second.norm_a.bias[0] == m.second.norm_a.bias[0] and
         loaded.third.norm_b.running_mean[0] == m.third.norm_b.running_mean[0] and
         loaded.third.norm_b.running_var[0] == m.third.norm_b.running_var[0] and
-        loaded.head.weight[12] == m.head.weight[12]
+        loaded.head.weight[12] == m.head.weight[12] and
+        restored_stats.mean[0] == stats.mean[0] and
+        restored_stats.mean[1] == stats.mean[1] and
+        restored_stats.mean[2] == stats.mean[2] and
+        restored_stats.invstd[0] == stats.invstd[0] and
+        restored_stats.invstd[1] == stats.invstd[1] and
+        restored_stats.invstd[2] == stats.invstd[2]
     let wrong_width: Model = model_new(3)
-    let rejected: bool = not checkpoint_load("smoke-model.bin",wrong_width,3)
+    let rejected: bool = not checkpoint_load("smoke-model.bin",wrong_width,3,restored_stats)
     let _cleanup: i32 = remove("smoke-model.bin")
     model_free(wrong_width)
     model_free(loaded)
     model_free(m)
+    statistics_free(stats)
+    statistics_free(restored_stats)
     return saved and read_ok and same and rejected
 }
 
