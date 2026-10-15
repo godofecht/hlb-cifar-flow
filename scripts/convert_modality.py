@@ -51,18 +51,23 @@ def write_split(root: Path, name: str, rows, cap: int, classes: int):
     # Balancing is needed because upstream IDX/CSV files are class-sorted.
     counts: Counter[int] = Counter()
     collected: list[tuple[int, np.ndarray]] = []
-    quota = max(1, (cap + classes - 1) // classes)
+    if cap < classes:
+        raise ValueError("Need at least one example per class")
+    quotas = {label: cap // classes + (1 if label < cap % classes else 0)
+              for label in range(classes)}
     for label, image in rows:
-        if counts[label] >= quota:
+        if counts[label] >= quotas[label]:
             continue
         collected.append((label, image))
         counts[label] += 1
-        if len(counts) == classes and all(counts[i] >= quota for i in range(classes)):
+        if all(counts[i] >= quotas[i] for i in range(classes)):
             break
     if any(counts[i] == 0 for i in range(classes)):
         raise RuntimeError(f"{name}: source sample omitted at least one class: {dict(counts)}")
     rng = np.random.default_rng(20261015)
     rng.shuffle(collected)
+    if len(collected) != cap:
+        raise RuntimeError(f"{name}: expected {cap}, received {len(collected)}")
     collected = collected[:cap]
     output = root / ("data_batch_1.bin" if name == "train" else "test_batch.bin")
     with output.open("wb") as handle:
@@ -243,8 +248,8 @@ def main():
     parser.add_argument("--test", type=int, default=16)
     parser.add_argument("--output", type=Path, default=Path("data/cifar-10-batches-bin"))
     args = parser.parse_args()
-    if args.train < 20 or args.test < 8:
-        parser.error("at least 20 train and 8 test samples required for stratified tiny experiments")
+    if args.train < 20 or args.test < 10:
+        parser.error("at least 20 train and 10 test samples required for stratified tiny experiments")
     run(args)
 
 
