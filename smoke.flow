@@ -142,6 +142,101 @@ function train_step_check() -> bool {
     return ok
 }
 
+# Optimized kernel must match the independently implemented reference
+# in both the forward and backward directions on nontrivial channel shapes.
+function conv_reference_check() -> bool {
+    let c: Conv = conv_new(2,3,3,1,false)
+    let ref: Conv = conv_new(2,3,3,1,false)
+    for i in 0 to conv_count(c) {
+        ref.weight[i] = c.weight[i]
+    }
+    let x: Tensor = tensor(2,2,5,7)
+    for i in 0 to 2*2*5*7 {
+        x.data[i] = ((i*13%101) as f32)*0.009-0.35
+    }
+    let y: Tensor = conv_forward(c,x)
+    let yr: Tensor = conv_forward_reference(ref,x)
+    let g: Tensor = tensor(y.n,y.c,y.h,y.w)
+    let mut max_error: f32 = 0.0
+    for i in 0 to y.n*y.c*y.h*y.w {
+        let diff: f32 = absf(y.data[i]-yr.data[i])
+        if diff > max_error { max_error = diff }
+        g.data[i] = ((i*17%91) as f32)*0.01-0.3
+    }
+    let dx: Tensor = conv_backward(c,x,g)
+    let dxr: Tensor = conv_backward_reference(ref,x,g)
+    for i in 0 to x.n*x.c*x.h*x.w {
+        let diff: f32 = absf(dx.data[i]-dxr.data[i])
+        if diff > max_error { max_error = diff }
+    }
+    for i in 0 to conv_count(c) {
+        let diff: f32 = absf(c.grad[i]-ref.grad[i])
+        if diff > max_error { max_error = diff }
+    }
+    tensor_free(x)
+    tensor_free(y)
+    tensor_free(yr)
+    tensor_free(g)
+    tensor_free(dx)
+    tensor_free(dxr)
+    conv_free(c)
+    conv_free(ref)
+    return max_error < 0.0005
+}
+
+function conv_valid_padding_check() -> bool {
+    let c: Conv = conv_new(3,4,2,0,false)
+    let x: Tensor = tensor(1,3,4,6)
+    for i in 0 to 3*4*6 { x.data[i] = ((i*31%77) as f32)*0.01 }
+    let y: Tensor = conv_forward(c,x)
+    let yr: Tensor = conv_forward_reference(c,x)
+    let mut ok: bool = y.h == 3 and y.w == 5
+    for i in 0 to y.n*y.c*y.h*y.w {
+        if absf(y.data[i]-yr.data[i]) > 0.0001 { ok = false }
+    }
+    tensor_free(x)
+    tensor_free(y)
+    tensor_free(yr)
+    conv_free(c)
+    return ok
+}
+
+function learning_rate_ratio_check() -> bool {
+    let m: Model = model_new(2)
+    m.first.a.weight[0] = 0.0
+    m.first.a.grad[0] = 1.0
+    m.first.norm_a.bias[0] = 0.0
+    m.first.norm_a.grad[0] = 1.0
+    model_step(m,0.01,2)
+    let delta_w: f32 = absf(m.first.a.weight[0])
+    let delta_b: f32 = absf(m.first.norm_a.bias[0])
+    let ok: bool = absf(delta_w-0.0185) < 0.00001 and
+        absf(delta_b-1.184) < 0.0005 and
+        absf(delta_b/delta_w-64.0) < 0.01
+    model_free(m)
+    return ok
+}
+
+function augmentation_check() -> bool {
+    let data: Dataset = dataset_create(3)
+    for i in 0 to 3*3072 { data.images[i] = ((i*7%113) as f32)*0.01 }
+    for i in 0 to 3 { data.labels[i] = i }
+    let indices: ptr<i32> = shuffled_indices(3)
+    let mut ok: bool = true
+    for repeat in 0 to 40 {
+        let batch: Batch = batch_from_dataset(data,indices,0,3,true,true)
+        for b in 0 to 3 {
+            let mut sum: f32 = 0.0
+            for k in 0 to CLASSES { sum = sum+batch.targets[b*CLASSES+k] }
+            if absf(sum-1.0) > 0.00001 { ok = false }
+        }
+        batch_free(batch)
+    }
+    free(indices as ptr<f32>)
+    dataset_free(data)
+    return ok
+}
+
 function main() -> i32 {
     let a: bool = conv_gradient_check()
     let b: bool = gelu_gradient_check()
@@ -149,13 +244,21 @@ function main() -> i32 {
     let d: bool = pooling_gradient_check()
     let e: bool = whitening_check()
     let f: bool = train_step_check()
+    let g: bool = conv_reference_check()
+    let h: bool = conv_valid_padding_check()
+    let i: bool = learning_rate_ratio_check()
+    let j: bool = augmentation_check()
     print("conv_gradient "); println(a)
     print("gelu_gradient "); println(b)
     print("batchnorm_gradient "); println(c)
     print("pool_gradient "); println(d)
     print("whitening "); println(e)
     print("network_train_step "); println(f)
-    if a and b and c and d and e and f {
+    print("optimized_conv_matches_reference "); println(g)
+    print("valid_conv_matches_reference "); println(h)
+    print("bias_lr_64x "); println(i)
+    print("cutmix_normalized_labels "); println(j)
+    if a and b and c and d and e and f and g and h and i and j {
         println("PASS")
         return 0
     }
