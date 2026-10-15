@@ -23,3 +23,14 @@ jobs:
         run: ../flow/flow run smoke.flow
       - name: Compile complete training entrypoint
         run: ../flow/flow compile train.flow
+      - name: Generate small synthetic CIFAR binary fixtures
+        run: python3 scripts/generate-fixture.py
+      - name: Exercise end-to-end training and evaluation without PyTorch
+        env:
+          HLB_TRAIN_LIMIT: "16"
+          HLB_EVAL_LIMIT: "8"
+          HLB_WIDTH: "2"
+          HLB_BATCH: "2"
+          HLB_EPOCHS: "1"
+          HLB_WHITEN_EXAMPLES: "16"
+        run: ../flow/flow run train.flow
