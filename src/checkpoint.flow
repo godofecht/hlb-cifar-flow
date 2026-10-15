@@ -1,6 +1,6 @@
 # Versioned binary checkpoint I/O for native Flow HLB model.
 # Stores frozen whitening weights, every trainable kernel and BN affine
-# bias/running statistics, and the classifier matrix as IEEE-754 f32.
+# bias/running statistics, input normalisation statistics and the classifier matrix as IEEE-754 f32.
 # The format is deliberately simple, local, little-endian, non-portable
 # across machines with different integer/float representations.
 # No serialization libraries and no Python runtime.
@@ -52,12 +52,12 @@ function checkpoint_read_block(fp: ptr<u8>, b: Block) -> bool {
         checkpoint_read_norm(fp,b.norm_b)
 }
 
-function checkpoint_save(path: string, m: Model, base: i32) -> bool {
+function checkpoint_save(path: string, m: Model, base: i32, stats: Statistics) -> bool {
     let fp: ptr<u8> = fopen(path,"wb")
     if fp == null { return false }
     let header: ptr<i32> = alloc_i32(8)
     header[0] = 0x484C4246     # "HLBF" / Flow checkpoint magic
-    header[1] = 1              # format version
+    header[1] = 2              # format version (includes input normalisation)
     header[2] = base
     header[3] = 24             # whitened channel count
     header[4] = base
@@ -67,6 +67,8 @@ function checkpoint_save(path: string, m: Model, base: i32) -> bool {
     let header_ok: bool = fwrite(header as ptr<u8>,4,8,fp) == 8
     free(header as ptr<f32>)
     let ok: bool = header_ok and
+        checkpoint_write_array(fp,stats.mean,3) and
+        checkpoint_write_array(fp,stats.invstd,3) and
         checkpoint_write_conv(fp,m.whitening) and
         checkpoint_write_block(fp,m.first) and
         checkpoint_write_block(fp,m.second) and
@@ -81,14 +83,14 @@ function checkpoint_save(path: string, m: Model, base: i32) -> bool {
     return true
 }
 
-function checkpoint_load(path: string, m: Model, base: i32) -> bool {
+function checkpoint_load(path: string, m: Model, base: i32, stats: Statistics) -> bool {
     let fp: ptr<u8> = fopen(path,"rb")
     if fp == null { return false }
     let header: ptr<i32> = alloc_i32(8)
     let header_ok: bool = fread(header as ptr<u8>,4,8,fp) == 8
     let mut valid: bool = header_ok
     if valid {
-        valid = header[0] == 0x484C4246 and header[1] == 1 and
+        valid = header[0] == 0x484C4246 and header[1] == 2 and
             header[2] == base and header[3] == 24 and
             header[4] == base and header[5] == base*4 and
             header[6] == base*8 and header[7] == CLASSES
@@ -98,7 +100,9 @@ function checkpoint_load(path: string, m: Model, base: i32) -> bool {
         let _close: i32 = fclose(fp)
         return false
     }
-    let ok: bool = checkpoint_read_conv(fp,m.whitening) and
+    let ok: bool = checkpoint_read_array(fp,stats.mean,3) and
+        checkpoint_read_array(fp,stats.invstd,3) and
+        checkpoint_read_conv(fp,m.whitening) and
         checkpoint_read_block(fp,m.first) and
         checkpoint_read_block(fp,m.second) and
         checkpoint_read_block(fp,m.third) and
