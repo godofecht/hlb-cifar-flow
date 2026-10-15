@@ -1,0 +1,62 @@
+name: Official CIFAR-10 CPU experiment (manual)
+on:
+  workflow_dispatch:
+    inputs:
+      train_examples:
+        description: "Official training records, including validation holdout"
+        required: true
+        default: "512"
+      val_holdout:
+        description: "Held-out training records used for model selection"
+        required: true
+        default: "64"
+      width:
+        description: "Base convolution channel count (2 to 64)"
+        required: true
+        default: "2"
+      epochs:
+        description: "Number of training epochs"
+        required: true
+        default: "2"
+      batch:
+        description: "Minibatch size"
+        required: true
+        default: "8"
+      whitening_stride:
+        description: "PCA 2x2 patch stride (1 = exhaustive)"
+        required: true
+        default: "8"
+
+jobs:
+  real-data-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      HLB_TRAIN_LIMIT: ${{ inputs.train_examples }}
+      HLB_VAL_HOLDOUT: ${{ inputs.val_holdout }}
+      HLB_WIDTH: ${{ inputs.width }}
+      HLB_EPOCHS: ${{ inputs.epochs }}
+      HLB_BATCH: ${{ inputs.batch }}
+      HLB_WHITEN_STRIDE: ${{ inputs.whitening_stride }}
+      HLB_WHITEN_EXAMPLES: ${{ inputs.train_examples }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare Flow reference compiler
+        run: |
+          git clone --depth=1 https://github.com/flooooooooooow/flow.git ../flow
+          cd ../flow
+          git fetch --depth=1 origin 69c8ec453941a1738ac06343bdcb440025610c67
+          git checkout 69c8ec453941a1738ac06343bdcb440025610c67
+      - name: Download genuine CIFAR-10 binary batches from University of Toronto
+        run: bash scripts/download-data.sh
+      - name: Native Flow training on genuine examples with isolated validation
+        run: ../flow/flow run train.flow
+      - name: Upload trained model and statistics for later inference
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-flow-cifar-model
+          path: |
+            hlb-current.bin
+            hlb-ema.bin
+          if-no-files-found: error
+          retention-days: 7
