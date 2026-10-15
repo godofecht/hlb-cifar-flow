@@ -1,45 +1,67 @@
-# Data-dependent 2x2 patch whitening, 12x12 symmetric eigensolver in Flow.
-# Initial convolution weights: [U diag(1/sqrt(lambda+eps)), -U ...].
-# HLB's PyTorch code computes covariance eigenvectors using torch.linalg.eigh.
-# This implementation estimates the covariance from four deterministic patches
-# per selected training image and diagonalizes it with Jacobi rotations.
+# Native Flow PCA whitening, covariance streamed over the training images.
+# Stride 1 visits all 31x31 overlapping 2x2 patches per image; larger strides
+# give a reproducible, cheaper approximation for development CPU runs.
+# Eigenvectors use symmetric Jacobi rotations; signed pairs are frozen filters.
+# Unlike HLB's per-5000-image eigendecomposition averaging, covariance is
+# combined BEFORE one global decomposition, avoiding eigenvector sign mismatch.
 
-function whitening_fit(layer: Conv, d: Dataset, examples: i32) -> void {
+function whitening_fit_stride(layer: Conv, d: Dataset, examples: i32, requested_stride: i32) -> void {
     let mut n: i32 = examples
     if n > d.count { n = d.count }
     if n <= 0 { return }
+    let mut stride: i32 = requested_stride
+    if stride < 1 { stride = 1 }
+    if stride > 31 { stride = 31 }
 
-    let mean: ptr<f32> = alloc_f32(12)
-    let covariance: ptr<f32> = alloc_f32(144)
+    # Compute first and second raw moments in f64, independent of number
+    # of patches, without materializing the hundreds of millions of patches.
+    let sums: ptr<f64> = malloc((12 as i64)*8) as ptr<f64>
+    let seconds: ptr<f64> = malloc((144 as i64)*8) as ptr<f64>
+    for i in 0 to 12 { sums[i] = 0.0 }
+    for i in 0 to 144 { seconds[i] = 0.0 }
     let patch: ptr<f32> = alloc_f32(12)
-    let count: f32 = (n * 4) as f32
+    let mut count: i32 = 0
 
     for sample in 0 to n {
-        for rep in 0 to 4 {
-            let y: i32 = (sample*7+rep*13) % 31
-            let x: i32 = (sample*11+rep*17) % 31
-            for ch in 0 to 3 {
-                for ky in 0 to 2 {
-                    for kx in 0 to 2 {
-                        let k: i32 = ch*4+ky*2+kx
-                        patch[k] = d.images[sample*3072+ch*1024+(y+ky)*32+x+kx]
+        let mut y: i32 = 0
+        while y < 31 {
+            let mut x: i32 = 0
+            while x < 31 {
+                for ch in 0 to 3 {
+                    for ky in 0 to 2 {
+                        for kx in 0 to 2 {
+                            let i: i32 = ch*4+ky*2+kx
+                            patch[i] = d.images[sample*3072+ch*1024+(y+ky)*32+(x+kx)]
+                        }
                     }
                 }
-            }
-            for i in 0 to 12 {
-                mean[i] = mean[i] + patch[i]
-                for j in 0 to 12 {
-                    covariance[i*12+j] = covariance[i*12+j] + patch[i]*patch[j]
+                for i in 0 to 12 {
+                    let vi: f64 = patch[i] as f64
+                    sums[i] = sums[i] + vi
+                    for j in 0 to 12 {
+                        seconds[i*12+j] = seconds[i*12+j] + vi*(patch[j] as f64)
+                    }
                 }
+                count = count+1
+                x = x+stride
+            }
+            y = y+stride
+        }
+    }
+
+    let covariance: ptr<f32> = alloc_f32(144)
+    if count > 1 {
+        let n64: f64 = count as f64
+        for i in 0 to 12 {
+            for j in 0 to 12 {
+                let centered: f64 = seconds[i*12+j]-sums[i]*sums[j]/n64
+                covariance[i*12+j] = (centered/(n64-1.0)) as f32
             }
         }
     }
-    for i in 0 to 12 { mean[i] = mean[i] / count }
-    for i in 0 to 12 {
-        for j in 0 to 12 {
-            covariance[i*12+j] = covariance[i*12+j] / count - mean[i]*mean[j]
-        }
-    }
+    free(sums as ptr<f32>)
+    free(seconds as ptr<f32>)
+    free(patch)
 
     let eigenvectors: ptr<f32> = alloc_f32(144)
     for i in 0 to 12 { eigenvectors[i*12+i] = 1.0 }
@@ -114,7 +136,11 @@ function whitening_fit(layer: Conv, d: Dataset, examples: i32) -> void {
 
     free(used as ptr<f32>)
     free(eigenvectors)
-    free(mean)
     free(covariance)
-    free(patch)
+}
+
+# Default is an economical 4x4 grid of patches per image, rather than four
+# arbitrary positions. Training can set stride=1 for exhaustive whitening.
+function whitening_fit(layer: Conv, d: Dataset, examples: i32) -> void {
+    whitening_fit_stride(layer,d,examples,8)
 }
