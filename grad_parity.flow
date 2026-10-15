@@ -1,0 +1,50 @@
+# Exact gradient comparison against MLX autograd for a full model step.
+# The model is loaded from a checkpoint, so initialization does not differ.
+import "src/core.flow"
+import "src/data.flow"
+import "src/checkpoint.flow"
+
+extern {
+    function printf(fmt: string, value: f64) -> i32
+}
+
+function main() -> i32 {
+    let width: i32 = env_int("HLB_WIDTH",2)
+    let model: Model = model_new(width)
+    let stats: Statistics = Statistics { mean: alloc_f32(3), invstd: alloc_f32(3) }
+    if not checkpoint_load("hlb-ema.bin",model,width,stats) {
+        println("No matching hlb-ema.bin checkpoint")
+        model_free(model)
+        statistics_free(stats)
+        return 2
+    }
+    let x: Tensor = tensor(2,3,32,32)
+    for i in 0 to 2*3*32*32 {
+        x.data[i] = ((i*13 % 251) as f32) / 251.0
+    }
+    let targets: ptr<f32> = alloc_f32(20)
+    targets[0] = 1.0
+    targets[CLASSES+1] = 1.0
+    let c: ModelCache = model_forward(model,x,true)
+    let loss: f32 = model_backward(model,c,targets)
+    println("GRAD_START")
+    let a: i32 = printf("%.9g\n",loss as f64)
+    let b: i32 = printf("%.9g\n",model.head.grad[0] as f64)
+    let d: i32 = printf("%.9g\n",model.head.grad[1] as f64)
+    let e: i32 = printf("%.9g\n",model.head.grad[10] as f64)
+    let f: i32 = printf("%.9g\n",model.first.a.grad[0] as f64)
+    let g: i32 = printf("%.9g\n",model.first.a.grad[1] as f64)
+    let h: i32 = printf("%.9g\n",model.first.a.grad[10] as f64)
+    let j: i32 = printf("%.9g\n",model.second.b.grad[0] as f64)
+    let k: i32 = printf("%.9g\n",model.second.b.grad[4] as f64)
+    let l: i32 = printf("%.9g\n",model.third.norm_a.grad[0] as f64)
+    let m: i32 = printf("%.9g\n",model.third.norm_b.grad[0] as f64)
+    let n: i32 = printf("%.9g\n",model.first.norm_a.grad[0] as f64)
+    println("GRAD_END")
+    model_cache_free(c)
+    tensor_free(x)
+    free(targets)
+    model_free(model)
+    statistics_free(stats)
+    return 0
+}
