@@ -4,6 +4,7 @@
 import "src/core.flow"
 import "src/data.flow"
 import "src/whitening.flow"
+import "src/checkpoint.flow"
 
 function absf(x: f32) -> f32 {
     if x < 0.0 { return 0.0-x }
@@ -256,6 +257,32 @@ function running_variance_check() -> bool {
     return ok
 }
 
+function checkpoint_roundtrip_check() -> bool {
+    let m: Model = model_new(2)
+    m.whitening.weight[17] = 0.123456
+    m.first.a.weight[0] = 1.25
+    m.second.norm_a.bias[0] = -0.25
+    m.third.norm_b.running_mean[0] = 0.75
+    m.third.norm_b.running_var[0] = 1.5
+    m.head.weight[12] = -0.333
+    let saved: bool = checkpoint_save("smoke-model.bin",m,2)
+    let loaded: Model = model_new(2)
+    let read_ok: bool = checkpoint_load("smoke-model.bin",loaded,2)
+    let same: bool = loaded.whitening.weight[17] == m.whitening.weight[17] and
+        loaded.first.a.weight[0] == m.first.a.weight[0] and
+        loaded.second.norm_a.bias[0] == m.second.norm_a.bias[0] and
+        loaded.third.norm_b.running_mean[0] == m.third.norm_b.running_mean[0] and
+        loaded.third.norm_b.running_var[0] == m.third.norm_b.running_var[0] and
+        loaded.head.weight[12] == m.head.weight[12]
+    let wrong_width: Model = model_new(3)
+    let rejected: bool = not checkpoint_load("smoke-model.bin",wrong_width,3)
+    let _cleanup: i32 = remove("smoke-model.bin")
+    model_free(wrong_width)
+    model_free(loaded)
+    model_free(m)
+    return saved and read_ok and same and rejected
+}
+
 function main() -> i32 {
     let a: bool = conv_gradient_check()
     let b: bool = gelu_gradient_check()
@@ -268,6 +295,7 @@ function main() -> i32 {
     let i: bool = learning_rate_ratio_check()
     let j: bool = augmentation_check()
     let k: bool = running_variance_check()
+    let l: bool = checkpoint_roundtrip_check()
     print("conv_gradient "); println(a)
     print("gelu_gradient "); println(b)
     print("batchnorm_gradient "); println(c)
@@ -279,7 +307,8 @@ function main() -> i32 {
     print("bias_lr_64x "); println(i)
     print("cutmix_normalized_labels "); println(j)
     print("pytorch_running_bn_variance "); println(k)
-    if a and b and c and d and e and f and g and h and i and j and k {
+    print("checkpoint_roundtrip "); println(l)
+    if a and b and c and d and e and f and g and h and i and j and k and l {
         println("PASS")
         return 0
     }
