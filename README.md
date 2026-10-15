@@ -64,6 +64,8 @@ First verify gradient agreement on synthetic small problems with finite differen
 
 Report data preparation, PCA whitening, training and evaluation times **separately**. The original benchmark deliberately does not include all of them in its headline training time.
 
+CI additionally generates a **synthetic** CIFAR-binary fixture with `scripts/generate-fixture.py` and performs an end-to-end train/evaluate run. Those generated pixels are not part of the official CIFAR-10 dataset and must never be used for accuracy claims.
+
 The immediate performance roadmap is batched GEMM/im2col, convolution fusion, activation/BatchNorm fusion, selective rematerialisation, FP16 accumulation, and native Flow-to-CUDA compilation. These are **not** implemented by this repository.
 
 ## Attribution
