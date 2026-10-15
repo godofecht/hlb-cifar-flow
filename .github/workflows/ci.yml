@@ -49,3 +49,10 @@ jobs:
           HLB_EPOCHS: "1"
           HLB_WHITEN_EXAMPLES: "12"
         run: ../flow/flow run train.flow
+
+      - name: Reload model and run standalone Flow inference
+        env:
+          HLB_WIDTH: "2"
+          HLB_BATCH: "2"
+          HLB_EVAL_LIMIT: "8"
+        run: ../flow/flow run infer.flow
