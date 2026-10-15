@@ -340,9 +340,16 @@ struct BlockCache {
 }
 
 function block_new(cin: i32, cout: i32) -> Block {
+    let b: Conv = conv_new(cout,cout,3,1,false)
+    # Original HLB makes the second 3x3 convolution exactly Dirac.
+    for i in 0 to conv_count(b) { b.weight[i] = 0.0 }
+    for ch in 0 to cout {
+        let index: i32 = ((ch*cout+ch)*3+1)*3+1
+        b.weight[index] = 1.0
+    }
     return Block {
         a: conv_new(cin,cout,3,1,true),
-        b: conv_new(cout,cout,3,1,true),
+        b: b,
         norm_a: norm_new(cout),
         norm_b: norm_new(cout)
     }
@@ -614,7 +621,7 @@ function block_step(b: Block, lr: f32, bias_lr: f32, wd: f32, bias_wd: f32) -> v
 }
 
 function model_step(m: Model, lr: f32, batch_size: i32) -> void {
-    let wd: f32 = 0.0006687 * (batch_size as f32)
+    let wd: f32 = 0.0006687 * (batch_size as f32) / 512.0
     let bias_wd: f32 = wd / 64.0
     block_step(m.first,lr,lr * 0.125,wd,bias_wd)
     block_step(m.second,lr,lr * 0.125,wd,bias_wd)
