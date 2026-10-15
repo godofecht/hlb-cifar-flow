@@ -1,0 +1,36 @@
+# Cross-backend deterministic logits, Flow CPU versus MLX on Apple Silicon.
+# Reads v2 Flow checkpoint; prints exactly 20 logits for Python comparison.
+import "src/core.flow"
+import "src/data.flow"
+import "src/checkpoint.flow"
+
+extern {
+    function printf(fmt: string, value: f64) -> i32
+}
+
+function main() -> i32 {
+    let width: i32 = env_int("HLB_WIDTH",2)
+    let model: Model = model_new(width)
+    let stats: Statistics = Statistics { mean: alloc_f32(3), invstd: alloc_f32(3) }
+    if not checkpoint_load("hlb-ema.bin",model,width,stats) {
+        println("Failed to load Flow v2 checkpoint")
+        model_free(model)
+        statistics_free(stats)
+        return 2
+    }
+    let input: Tensor = tensor(2,3,32,32)
+    for i in 0 to 2*3*32*32 {
+        input.data[i] = ((i*13 % 251) as f32) / 251.0
+    }
+    let output: Tensor = model_predict(model,input)
+    println("PARITY_START")
+    for i in 0 to 2*CLASSES {
+        let ignored: i32 = printf("%.9g\n",output.data[i] as f64)
+    }
+    println("PARITY_END")
+    tensor_free(output)
+    tensor_free(input)
+    model_free(model)
+    statistics_free(stats)
+    return 0
+}
