@@ -1,0 +1,164 @@
+# Deterministic numeric checks of the native Flow training primitives.
+# Run from repository root: flow run tests/smoke.flow
+
+import "src/core.flow"
+import "src/data.flow"
+import "src/whitening.flow"
+
+function absf(x: f32) -> f32 {
+    if x < 0.0 { return 0.0-x }
+    return x
+}
+
+function conv_gradient_check() -> bool {
+    let conv: Conv = conv_new(1,1,3,1,false)
+    let x: Tensor = tensor(1,1,3,3)
+    for i in 0 to 9 { x.data[i] = 0.1 + (i as f32)*0.17 }
+    let y: Tensor = conv_forward(conv,x)
+    let dy: Tensor = tensor(1,1,3,3)
+    for i in 0 to 9 { dy.data[i] = 1.0 }
+    let dx: Tensor = conv_backward(conv,x,dy)
+
+    let analytic: f32 = conv.grad[4]
+    let start: f32 = conv.weight[4]
+    conv.weight[4] = start+0.001
+    let pos: Tensor = conv_forward(conv,x)
+    let mut lp: f32 = 0.0
+    for i in 0 to 9 { lp = lp+pos.data[i] }
+
+    conv.weight[4] = start-0.001
+    let neg: Tensor = conv_forward(conv,x)
+    let mut lm: f32 = 0.0
+    for i in 0 to 9 { lm = lm+neg.data[i] }
+
+    let finite: f32 = (lp-lm)/0.002
+    let ok: bool = absf(analytic-finite) < 0.005 and absf(dx.data[4]) > 0.00001
+    tensor_free(pos)
+    tensor_free(neg)
+    tensor_free(dx)
+    tensor_free(dy)
+    tensor_free(y)
+    tensor_free(x)
+    conv_free(conv)
+    return ok
+}
+
+function gelu_gradient_check() -> bool {
+    let x: f32 = 0.47
+    let slope: f32 = (gelu(x+0.0001)-gelu(x-0.0001))/0.0002
+    return absf(slope-gelu_prime(x)) < 0.003
+}
+
+function batchnorm_gradient_check() -> bool {
+    let norm: Norm = norm_new(1)
+    let x: Tensor = tensor(2,1,2,2)
+    let dy: Tensor = tensor(2,1,2,2)
+    for i in 0 to 8 {
+        x.data[i] = (i as f32)*0.21-0.4
+        dy.data[i] = (i as f32)*0.17+0.15
+    }
+    let original: Tensor = norm_forward(norm,x,true)
+    let dx: Tensor = norm_backward(norm,x,dy)
+    let analytical: f32 = dx.data[2]
+
+    let saved: f32 = x.data[2]
+    x.data[2] = saved+0.001
+    let plus: Tensor = norm_forward(norm,x,true)
+    let mut sp: f32 = 0.0
+    for i in 0 to 8 { sp = sp + plus.data[i]*dy.data[i] }
+
+    x.data[2] = saved-0.001
+    let minus: Tensor = norm_forward(norm,x,true)
+    let mut sm: f32 = 0.0
+    for i in 0 to 8 { sm = sm + minus.data[i]*dy.data[i] }
+
+    let numeric: f32 = (sp-sm)/0.002
+    let ok: bool = absf(analytical-numeric) < 0.01
+    tensor_free(original)
+    tensor_free(plus)
+    tensor_free(minus)
+    tensor_free(dx)
+    tensor_free(x)
+    tensor_free(dy)
+    norm_free(norm)
+    return ok
+}
+
+function pooling_gradient_check() -> bool {
+    let x: Tensor = tensor(1,1,4,4)
+    for i in 0 to 16 { x.data[i] = i as f32 }
+    let indices: ptr<i32> = alloc_i32(4)
+    let out: Tensor = pool2_forward(x,indices)
+    let dy: Tensor = tensor(1,1,2,2)
+    for i in 0 to 4 { dy.data[i] = 1.0 }
+    let dx: Tensor = pool2_backward(x,dy,indices)
+    let ok: bool = out.data[0] == 5.0 and out.data[3] == 15.0 and
+        dx.data[5] == 1.0 and dx.data[0] == 0.0 and dx.data[15] == 1.0
+    tensor_free(dx)
+    tensor_free(dy)
+    tensor_free(out)
+    tensor_free(x)
+    free(indices as ptr<f32>)
+    return ok
+}
+
+function whitening_check() -> bool {
+    let d: Dataset = dataset_create(4)
+    for i in 0 to 4*3072 {
+        d.images[i] = ((i*19 % 211) as f32) / 211.0
+    }
+    let conv: Conv = conv_new(3,24,2,0,false)
+    whitening_fit(conv,d,4)
+    let mut ok: bool = true
+    for i in 0 to 144 {
+        if absf(conv.weight[i]+conv.weight[i+144]) > 0.00001 { ok = false }
+        if not (conv.weight[i] < 100000.0 and conv.weight[i] > -100000.0) { ok = false }
+    }
+    conv_free(conv)
+    dataset_free(d)
+    return ok
+}
+
+function train_step_check() -> bool {
+    let m: Model = model_new(2)
+    let images: Tensor = tensor(2,3,32,32)
+    for i in 0 to 2*3072 {
+        images.data[i] = ((i*7 % 101) as f32)/100.0
+    }
+    let targets: ptr<f32> = alloc_f32(20)
+    targets[0] = 1.0
+    targets[CLASSES+1] = 1.0
+    let c: ModelCache = model_forward(m,images,true)
+    let loss: f32 = model_backward(m,c,targets)
+    let before: f32 = m.head.weight[0]
+    model_step(m,0.01,2)
+    let after: f32 = m.head.weight[0]
+    let ok: bool = loss > 0.0 and loss < 1000.0 and
+        absf(before-after) > 0.00000001
+    model_cache_free(c)
+    free(targets)
+    tensor_free(images)
+    model_free(m)
+    return ok
+}
+
+function main() -> i32 {
+    let a: bool = conv_gradient_check()
+    let b: bool = gelu_gradient_check()
+    let c: bool = batchnorm_gradient_check()
+    let d: bool = pooling_gradient_check()
+    let e: bool = whitening_check()
+    let f: bool = train_step_check()
+    print("conv_gradient "); println(a)
+    print("gelu_gradient "); println(b)
+    print("batchnorm_gradient "); println(c)
+    print("pool_gradient "); println(d)
+    print("whitening "); println(e)
+    print("network_train_step "); println(f)
+    if a and b and c and d and e and f {
+        println("PASS")
+        return 0
+    }
+    println("FAIL")
+    return 1
+}
