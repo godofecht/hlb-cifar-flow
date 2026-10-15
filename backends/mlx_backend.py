@@ -106,8 +106,9 @@ def conv(params, name, x, pad):
 
 def max_pool2(x):
     n, h, w, c = x.shape
-    if h % 2 or w % 2:
-        raise ValueError("Expected even spatial dimensions for 2x2 pooling")
+    # Flow's max-pool floors odd spatial extents (31 -> 15), matching
+    # PyTorch MaxPool2d(2). Dropping the last row/column is intentional.
+    x = x[:, : (h // 2) * 2, : (w // 2) * 2, :]
     return mx.max(mx.reshape(x, (n, h // 2, 2, w // 2, 2, c)), axis=(2, 4))
 
 
