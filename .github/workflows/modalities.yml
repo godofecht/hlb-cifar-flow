@@ -1,0 +1,60 @@
+name: Real datasets, four modalities, native Flow
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'train.flow'
+      - 'scripts/convert_modality.py'
+      - '.github/workflows/modalities.yml'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  real-modalities:
+    strategy:
+      fail-fast: false
+      matrix:
+        dataset: [fashion-mnist, spoken-digits, uci-har, ag-news]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      HLB_TRAIN_LIMIT: '40'
+      HLB_VAL_HOLDOUT: '8'
+      HLB_WIDTH: '2'
+      HLB_BATCH: '4'
+      HLB_EPOCHS: '1'
+      HLB_WHITEN_EXAMPLES: '32'
+      HLB_WHITEN_STRIDE: '8'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install converter dependencies (preprocessing only)
+        run: python -m pip install 'numpy>=1.26,<3'
+      - name: Compile native Flow reference
+        run: |
+          git clone --depth=1 https://github.com/flooooooooooow/flow.git ../flow
+          cd ../flow
+          git fetch --depth=1 origin 69c8ec453941a1738ac06343bdcb440025610c67
+          git checkout 69c8ec453941a1738ac06343bdcb440025610c67
+      - name: Fetch authentic data and convert to common Flow input ABI
+        run: |
+          python scripts/convert_modality.py --dataset "${{ matrix.dataset }}" --train 40 --test 20
+          python -c 'import json,pathlib; p=pathlib.Path("data/cifar-10-batches-bin"); x=json.loads((p/"provenance.json").read_text()); assert x["train"]["count"]==40 and x["test"]["count"]==20; assert len((p/"data_batch_1.bin").read_bytes())==40*3073; assert len((p/"test_batch.bin").read_bytes())==20*3073; print(x)'
+      - name: Train, validate and save model in native Flow
+        run: ../flow/flow run train.flow
+      - name: Model checkpoint must load for held-out modality records
+        run: |
+          test -s hlb-current.bin
+          test -s hlb-ema.bin
+      - name: Publish per-dataset provenance and model checkpoints
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: modality-${{ matrix.dataset }}
+          path: |
+            data/cifar-10-batches-bin/provenance.json
+            hlb-ema.bin
+          if-no-files-found: ignore
+          retention-days: 7
