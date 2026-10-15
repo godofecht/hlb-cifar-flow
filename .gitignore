@@ -4,3 +4,7 @@ data/
 *.out
 *.exe
 .DS_Store
+
+hlb-current.bin
+hlb-ema.bin
+smoke-model.bin
