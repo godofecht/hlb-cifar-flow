@@ -4,7 +4,7 @@
 
 Upstream research reference: [tysam-code/hlb-CIFAR10](https://github.com/tysam-code/hlb-CIFAR10) (Apache-2.0). Language: [Floooooooooooow/flow](https://github.com/flooooooooooow/flow). This repository was independently written in Flow; no PyTorch or NumPy dependency, and no external C neural-network implementation.
 
-> **Status:** Experimental CPU reference implementation; not an A100 speed record. Numerical test coverage is provided in `tests/smoke.flow`. The GitHub Actions workflow is the authoritative compiler/build gate.
+> **Status:** Experimental CPU reference implementation; not an A100 speed record. Numerical test coverage is provided in `smoke.flow`. The GitHub Actions workflow is the authoritative compiler/build gate.
 
 ## Implemented
 
@@ -32,7 +32,7 @@ Install Flow 2.0 or build its [self-hosted compiler](https://github.com/floooooo
 
 ```bash
 bash scripts/download-data.sh
-flow run tests/smoke.flow
+flow run smoke.flow
 flow run train.flow
 ```
 
