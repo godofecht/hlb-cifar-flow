@@ -179,7 +179,7 @@ function shuffled_indices(size: i32) -> ptr<i32> {
 function shuffle_indices(order: ptr<i32>, n: i32) -> void {
     let mut i: i32 = n-1
     while i > 0 {
-        let j: i32 = (random01() * ((i+1) as f32)) as i32
+        let j: i32 = random_index(i+1)
         let temp: i32 = order[i]
         order[i] = order[j]
         order[j] = temp
@@ -206,8 +206,8 @@ function batch_from_dataset(d: Dataset, order: ptr<i32>, start: i32, count: i32,
         let mut dx: i32 = 0
         let mut flip: bool = false
         if training {
-            dy = (random01()*5.0) as i32 - 2
-            dx = (random01()*5.0) as i32 - 2
+            dy = random_index(5) - 2
+            dx = random_index(5) - 2
             flip = random01() < 0.5
         }
         for ch in 0 to 3 {
@@ -231,9 +231,9 @@ function batch_from_dataset(d: Dataset, order: ptr<i32>, start: i32, count: i32,
         for i in 0 to count*3072 { old_images.data[i] = images.data[i] }
         for i in 0 to count*CLASSES { old_targets[i] = targets[i] }
         for b in 0 to count {
-            let peer: i32 = (random01()*(count as f32)) as i32
-            let left: i32 = (random01()*30.0) as i32
-            let top: i32 = (random01()*30.0) as i32
+            let peer: i32 = random_index(count)
+            let left: i32 = random_index(30)
+            let top: i32 = random_index(30)
             for ch in 0 to 3 {
                 for y in top to top+3 {
                     for x in left to left+3 {
