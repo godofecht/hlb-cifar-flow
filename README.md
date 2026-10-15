@@ -32,6 +32,7 @@ CI:
 ```bash
 # On macOS 14+ with Apple Silicon, after native Flow has generated a checkpoint:
 python -m pip install mlx numpy
+HLB_WIDTH=8 flow run parity.flow > flow-parity.txt
 python backends/mlx_backend.py parity --checkpoint hlb-ema.bin --flow-logits flow-parity.txt
 python backends/mlx_backend.py train --checkpoint hlb-current.bin --limit 40 --holdout 8 --epochs 1
 python backends/mlx_backend.py infer --checkpoint mlx-finetuned.bin --limit 20
