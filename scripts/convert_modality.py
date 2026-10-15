@@ -180,7 +180,16 @@ def load_uci_har():
     archive = zipfile.ZipFile(io.BytesIO(remote(HAR_URL)))
     prefix = next((item for item in archive.namelist() if item.endswith("UCI HAR Dataset/train/y_train.txt")), None)
     if not prefix:
-        raise RuntimeError("UCI HAR archive layout changed")
+        # UCI's modern static endpoint wraps the original ZIP inside a
+        # repository packaging ZIP. Unwrap exactly one known .zip member.
+        inner = [item for item in archive.namelist()
+                 if item.endswith("UCI HAR Dataset.zip")]
+        if len(inner) == 1:
+            archive = zipfile.ZipFile(io.BytesIO(archive.read(inner[0])))
+            prefix = next((item for item in archive.namelist()
+                           if item.endswith("UCI HAR Dataset/train/y_train.txt")), None)
+    if not prefix:
+        raise RuntimeError("Could not locate UCI HAR raw inertial signals in archive")
     root = prefix.removesuffix("train/y_train.txt")
     axis_names = ("body_acc_x", "body_acc_y", "body_acc_z",
                   "body_gyro_x", "body_gyro_y", "body_gyro_z",
