@@ -173,6 +173,56 @@ def run_parity(args):
         raise SystemExit(1)
 
 
+
+def run_grad_parity(args):
+    width, arrays, _, _ = read_checkpoint(Path(args.checkpoint))
+    params, running = load_parameters(arrays)
+    frozen = params.pop("whitening")
+    x = _as_nhwc(parity_inputs())
+    y = mx.array(np.eye(NCLASSES, dtype=np.float32)[[0, 1]])
+
+    def loss_fn(trainable):
+        weights = dict(trainable)
+        weights["whitening"] = frozen
+        logits, _ = forward(weights, running, x, training=True)
+        target = 0.8 * y + 0.02
+        return -mx.mean(mx.sum(target * (logits - mx.logsumexp(
+            logits, axis=-1, keepdims=True)), axis=-1))
+
+    loss, gradients = mx.value_and_grad(loss_fn)(params)
+    mx.eval(loss, gradients)
+    def weight_gradient(name):
+        values = np.asarray(gradients[name], dtype=np.float32)
+        if values.ndim == 4:
+            values = values.transpose(0, 3, 1, 2)
+        return values.reshape(-1)
+
+    measured = np.array([
+        float(np.asarray(loss)),
+        weight_gradient("head")[0], weight_gradient("head")[1],
+        weight_gradient("head")[10],
+        weight_gradient("first.a")[0], weight_gradient("first.a")[1],
+        weight_gradient("first.a")[10],
+        weight_gradient("second.b")[0], weight_gradient("second.b")[4],
+        weight_gradient("third.norm_a.bias")[0],
+        weight_gradient("third.norm_b.bias")[0],
+        weight_gradient("first.norm_a.bias")[0]
+    ], dtype=np.float32)
+    lines = Path(args.flow_gradients).read_text().splitlines()
+    start, stop = lines.index("GRAD_START"), lines.index("GRAD_END")
+    baseline = np.array([float(line.strip()) for line in lines[start + 1:stop]], dtype=np.float32)
+    if measured.shape != baseline.shape or len(baseline) != 12:
+        raise ValueError(f"Expected 12 Flow loss/gradient values, got {len(baseline)}")
+    diffs = np.abs(measured - baseline)
+    passed = bool(np.all(diffs <= args.grad_atol + args.grad_rtol * np.abs(baseline)))
+    print(json.dumps({"backend": "mlx", "test": "flow_analytic_gradient_parity",
+                      "count": len(measured), "max_abs_error": float(diffs.max()),
+                      "passed": passed, "atol": args.grad_atol, "rtol": args.grad_rtol}))
+    if not passed:
+        print("flow  :", baseline.tolist())
+        print("mlx   :", measured.tolist())
+        raise SystemExit(1)
+
 def read_binary_records(folder: Path, limit: int, train: bool):
     paths = ([folder / f"data_batch_{i}.bin" for i in range(1, 6)] if train
              else [folder / "test_batch.bin"])
@@ -301,9 +351,10 @@ def run_train(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("parity", "infer", "train"))
+    parser.add_argument("mode", choices=("parity", "grad-parity", "infer", "train"))
     parser.add_argument("--checkpoint", default="hlb-ema.bin")
     parser.add_argument("--flow-logits", default="flow-parity.txt")
+    parser.add_argument("--flow-gradients", default="flow-grads.txt")
     parser.add_argument("--data-dir", default="data/cifar-10-batches-bin")
     parser.add_argument("--limit", type=int, default=256)
     parser.add_argument("--batch", type=int, default=8)
@@ -314,8 +365,10 @@ def main():
     parser.add_argument("--output", default="mlx-finetuned.bin")
     parser.add_argument("--atol", type=float, default=0.004)
     parser.add_argument("--rtol", type=float, default=0.002)
+    parser.add_argument("--grad-atol", type=float, default=0.005)
+    parser.add_argument("--grad-rtol", type=float, default=0.02)
     args = parser.parse_args()
-    {"parity": run_parity, "infer": run_infer, "train": run_train}[args.mode](args)
+    {"parity": run_parity, "grad-parity": run_grad_parity, "infer": run_infer, "train": run_train}[args.mode](args)
 
 
 if __name__ == "__main__":
