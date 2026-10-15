@@ -75,6 +75,7 @@ function main() -> i32 {
     let batch_size: i32 = env_int("HLB_BATCH",8)
     let epochs: i32 = env_int("HLB_EPOCHS",2)
     let whiten_examples: i32 = env_int("HLB_WHITEN_EXAMPLES",1024)
+    let whiten_stride: i32 = env_int("HLB_WHITEN_STRIDE",8)
 
     if width > 64 or batch_size > 1024 or width < 2 or batch_size < 2 {
         println("Invalid width/batch; width must be 2..64 and batch 2..1024")
@@ -97,7 +98,7 @@ function main() -> i32 {
     statistics_free(stats)
 
     let m: Model = model_new(width)
-    whitening_fit(m.whitening,train,whiten_examples)
+    whitening_fit_stride(m.whitening,train,whiten_examples,whiten_stride)
     let ema: Model = model_new(width)
     model_ema_update(ema,m,0.0)
 
@@ -121,6 +122,7 @@ function main() -> i32 {
     print("width "); println(width)
     print("batch "); println(batch_size)
     print("epochs "); println(epochs)
+    print("whitening patch stride "); println(whiten_stride)
 
     for epoch in 0 to epochs {
         shuffle_indices(order,train.count)
