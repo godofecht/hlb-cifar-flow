@@ -12,6 +12,7 @@
 import "src/core.flow"
 import "src/data.flow"
 import "src/whitening.flow"
+import "src/checkpoint.flow"
 
 extern {
     function printf(fmt: string, value: f64) -> i32
@@ -198,6 +199,28 @@ function main() -> i32 {
     print("CPU training + validation seconds: ")
     let _time: i32 = printf("%.3f\n",((end_ns-start_ns) as f64)/1000000000.0)
     println("No A100/CUDA performance claim; see README limitations.")
+    if checkpoint_save("hlb-current.bin",m,width) {
+        println("checkpoint saved: hlb-current.bin")
+    } else {
+        println("ERROR: unable to write hlb-current.bin")
+        free(order as ptr<f32>)
+        model_free(ema)
+        model_free(m)
+        dataset_free(train_storage)
+        if holdout_count == 0 { dataset_free(eval_data) }
+        return 3
+    }
+    if checkpoint_save("hlb-ema.bin",ema,width) {
+        println("checkpoint saved: hlb-ema.bin")
+    } else {
+        println("ERROR: unable to write hlb-ema.bin")
+        free(order as ptr<f32>)
+        model_free(ema)
+        model_free(m)
+        dataset_free(train_storage)
+        if holdout_count == 0 { dataset_free(eval_data) }
+        return 3
+    }
 
     free(order as ptr<f32>)
     model_free(ema)
