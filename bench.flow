@@ -1,0 +1,77 @@
+# CPU direct-convolution microbenchmark, independent reference comparison.
+# Uses the same native Flow compiler and C runtime as train.flow.
+# This benchmark tests convolution kernels only, not HLB training throughput.
+#   flow run bench.flow
+import "src/core.flow"
+
+extern {
+    function printf(fmt: string, value: f64) -> i32
+}
+
+function abs_f32_bench(v: f32) -> f32 {
+    if v < 0.0 { return 0.0-v }
+    return v
+}
+
+function main() -> i32 {
+    let c: Conv = conv_new(8,16,3,1,false)
+    let x: Tensor = tensor(2,8,16,16)
+    for i in 0 to 2*8*16*16 {
+        x.data[i] = ((i*29%123) as f32)*0.01
+    }
+
+    # First verify that both convolution variants produce the same result.
+    let y_ref: Tensor = conv_forward_reference(c,x)
+    let y_fast: Tensor = conv_forward(c,x)
+    let mut max_diff: f32 = 0.0
+    let mut checksum: f32 = 0.0
+    for i in 0 to y_fast.n*y_fast.c*y_fast.h*y_fast.w {
+        let diff: f32 = abs_f32_bench(y_ref.data[i]-y_fast.data[i])
+        if diff > max_diff { max_diff = diff }
+        checksum = checksum+y_fast.data[i]
+    }
+    tensor_free(y_ref)
+    tensor_free(y_fast)
+
+    let repeat: i32 = 8
+    let before_reference: i64 = flow_rt_monotonic_ns()
+    for iteration in 0 to repeat {
+        let y: Tensor = conv_forward_reference(c,x)
+        checksum = checksum + y.data[iteration]
+        tensor_free(y)
+    }
+    let after_reference: i64 = flow_rt_monotonic_ns()
+    for iteration in 0 to repeat {
+        let y: Tensor = conv_forward(c,x)
+        checksum = checksum + y.data[iteration]
+        tensor_free(y)
+    }
+    let after_fast: i64 = flow_rt_monotonic_ns()
+
+    let reference_ms: f64 = ((after_reference-before_reference) as f64)/1000000.0
+    let fast_ms: f64 = ((after_fast-after_reference) as f64)/1000000.0
+    let mut speedup: f64 = 0.0
+    if fast_ms > 0.0 { speedup = reference_ms/fast_ms }
+
+    print("conv shape NCHW=(2,8,16,16) filters=(16,8,3,3), repeats=")
+    println(repeat)
+    print("reference_ms ")
+    let _a: i32 = printf("%.3f\n",reference_ms)
+    print("optimized_ms ")
+    let _b: i32 = printf("%.3f\n",fast_ms)
+    print("reference_over_optimized ")
+    let _c: i32 = printf("%.2f\n",speedup)
+    print("max_abs_error ")
+    let _d: i32 = printf("%.7f\n",max_diff as f64)
+    print("checksum ")
+    let _e: i32 = printf("%.4f\n",checksum as f64)
+
+    conv_free(c)
+    tensor_free(x)
+    if max_diff > 0.001 {
+        println("FAIL: incorrect optimized forward kernel")
+        return 1
+    }
+    println("PASS: convolution parity (timing informational)")
+    return 0
+}
