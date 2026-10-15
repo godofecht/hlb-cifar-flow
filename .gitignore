@@ -1,0 +1,6 @@
+data/
+.flow/
+*.o
+*.out
+*.exe
+.DS_Store
