@@ -84,16 +84,16 @@ function main() -> i32 {
     println("HLB CIFAR-10 / native Flow f32 CPU reference")
     println("Loading CIFAR-10 binary records")
     let train: Dataset = load_train(train_limit)
-    let test: Dataset = load_test(test_limit)
-    if train.count < 2 or test.count < 1 {
+    let eval_data: Dataset = load_test(test_limit)
+    if train.count < 2 or eval_data.count < 1 {
         println("Dataset missing or empty; run scripts/download-data.sh")
         dataset_free(train)
-        dataset_free(test)
+        dataset_free(eval_data)
         return 2
     }
     let stats: Statistics = train_statistics(train)
     normalize_dataset(train,stats)
-    normalize_dataset(test,stats)
+    normalize_dataset(eval_data,stats)
     statistics_free(stats)
 
     let m: Model = model_new(width)
@@ -109,7 +109,7 @@ function main() -> i32 {
         model_free(ema)
         model_free(m)
         dataset_free(train)
-        dataset_free(test)
+        dataset_free(eval_data)
         return 2
     }
     let total_steps: i32 = steps_per_epoch * epochs
@@ -117,7 +117,7 @@ function main() -> i32 {
     let start_ns: i64 = flow_rt_monotonic_ns()
 
     print("training images "); println(train.count)
-    print("test images "); println(test.count)
+    print("test images "); println(eval_data.count)
     print("width "); println(width)
     print("batch "); println(batch_size)
     print("epochs "); println(epochs)
@@ -145,8 +145,8 @@ function main() -> i32 {
             }
             batch_free(batch)
         }
-        let val_accuracy: f32 = evaluate(m,test,batch_size,true)
-        let ema_accuracy: f32 = evaluate(ema,test,batch_size,true)
+        let val_accuracy: f32 = evaluate(m,eval_data,batch_size,true)
+        let ema_accuracy: f32 = evaluate(ema,eval_data,batch_size,true)
         print("epoch "); print(epoch+1)
         print(" train_loss ")
         let _l: i32 = printf("%.5f", (train_loss / (steps_per_epoch as f32)) as f64)
@@ -165,6 +165,6 @@ function main() -> i32 {
     model_free(ema)
     model_free(m)
     dataset_free(train)
-    dataset_free(test)
+    dataset_free(eval_data)
     return 0
 }
