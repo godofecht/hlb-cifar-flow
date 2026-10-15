@@ -1,0 +1,108 @@
+# Versioned binary checkpoint I/O for native Flow HLB model.
+# Stores frozen whitening weights, every trainable kernel and BN affine
+# bias/running statistics, and the classifier matrix as IEEE-754 f32.
+# The format is deliberately simple, local, little-endian, non-portable
+# across machines with different integer/float representations.
+# No serialization libraries and no Python runtime.
+
+extern {
+    function fwrite(buffer: ptr<u8>, size: i64, count: i64, file: ptr<u8>) -> i64
+    function remove(path: string) -> i32
+}
+
+function checkpoint_write_array(fp: ptr<u8>, values: ptr<f32>, count: i32) -> bool {
+    return fwrite(values as ptr<u8>,4,count as i64,fp) == (count as i64)
+}
+
+function checkpoint_read_array(fp: ptr<u8>, values: ptr<f32>, count: i32) -> bool {
+    return fread(values as ptr<u8>,4,count as i64,fp) == (count as i64)
+}
+
+function checkpoint_write_conv(fp: ptr<u8>, c: Conv) -> bool {
+    return checkpoint_write_array(fp,c.weight,conv_count(c))
+}
+
+function checkpoint_read_conv(fp: ptr<u8>, c: Conv) -> bool {
+    return checkpoint_read_array(fp,c.weight,conv_count(c))
+}
+
+function checkpoint_write_norm(fp: ptr<u8>, n: Norm) -> bool {
+    return checkpoint_write_array(fp,n.bias,n.channels) and
+        checkpoint_write_array(fp,n.running_mean,n.channels) and
+        checkpoint_write_array(fp,n.running_var,n.channels)
+}
+
+function checkpoint_read_norm(fp: ptr<u8>, n: Norm) -> bool {
+    return checkpoint_read_array(fp,n.bias,n.channels) and
+        checkpoint_read_array(fp,n.running_mean,n.channels) and
+        checkpoint_read_array(fp,n.running_var,n.channels)
+}
+
+function checkpoint_write_block(fp: ptr<u8>, b: Block) -> bool {
+    return checkpoint_write_conv(fp,b.a) and
+        checkpoint_write_conv(fp,b.b) and
+        checkpoint_write_norm(fp,b.norm_a) and
+        checkpoint_write_norm(fp,b.norm_b)
+}
+
+function checkpoint_read_block(fp: ptr<u8>, b: Block) -> bool {
+    return checkpoint_read_conv(fp,b.a) and
+        checkpoint_read_conv(fp,b.b) and
+        checkpoint_read_norm(fp,b.norm_a) and
+        checkpoint_read_norm(fp,b.norm_b)
+}
+
+function checkpoint_save(path: string, m: Model, base: i32) -> bool {
+    let fp: ptr<u8> = fopen(path,"wb")
+    if fp == null { return false }
+    let header: ptr<i32> = alloc_i32(8)
+    header[0] = 0x484C4246     # "HLBF" / Flow checkpoint magic
+    header[1] = 1              # format version
+    header[2] = base
+    header[3] = 24             # whitened channel count
+    header[4] = base
+    header[5] = base*4
+    header[6] = base*8
+    header[7] = CLASSES
+    let header_ok: bool = fwrite(header as ptr<u8>,4,8,fp) == 8
+    free(header as ptr<f32>)
+    let ok: bool = header_ok and
+        checkpoint_write_conv(fp,m.whitening) and
+        checkpoint_write_block(fp,m.first) and
+        checkpoint_write_block(fp,m.second) and
+        checkpoint_write_block(fp,m.third) and
+        checkpoint_write_array(fp,m.head.weight,m.head.features*CLASSES)
+    let close_rc: i32 = fclose(fp)
+    if not ok or close_rc != 0 {
+        # Incomplete checkpoints must not be mistaken for successful output.
+        let _delete: i32 = remove(path)
+        return false
+    }
+    return true
+}
+
+function checkpoint_load(path: string, m: Model, base: i32) -> bool {
+    let fp: ptr<u8> = fopen(path,"rb")
+    if fp == null { return false }
+    let header: ptr<i32> = alloc_i32(8)
+    let header_ok: bool = fread(header as ptr<u8>,4,8,fp) == 8
+    let mut valid: bool = header_ok
+    if valid {
+        valid = header[0] == 0x484C4246 and header[1] == 1 and
+            header[2] == base and header[3] == 24 and
+            header[4] == base and header[5] == base*4 and
+            header[6] == base*8 and header[7] == CLASSES
+    }
+    free(header as ptr<f32>)
+    if not valid {
+        let _close: i32 = fclose(fp)
+        return false
+    }
+    let ok: bool = checkpoint_read_conv(fp,m.whitening) and
+        checkpoint_read_block(fp,m.first) and
+        checkpoint_read_block(fp,m.second) and
+        checkpoint_read_block(fp,m.third) and
+        checkpoint_read_array(fp,m.head.weight,m.head.features*CLASSES)
+    let close_rc: i32 = fclose(fp)
+    return ok and close_rc == 0
+}
