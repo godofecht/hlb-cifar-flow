@@ -264,7 +264,7 @@ def run_train(args):
             targets = mx.array(np.eye(NCLASSES, dtype=np.float32)[train_y[indices]])
             (loss, moments), grads = grad_fn(params, inp, targets)
             progress = step / max(1, n_steps - 1)
-            lr = 1.525 * (progress / .23 if progress < .23 else
+            lr = args.lr_scale * 1.525 * (progress / .23 if progress < .23 else
                           1.0 - .93 * (progress - .23) / .77)
             updated = {}
             for name, weight in params.items():
@@ -308,6 +308,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--holdout", type=int, default=16)
     parser.add_argument("--seed", type=int, default=20261015)
+    parser.add_argument("--lr-scale", type=float, default=1.0)
     parser.add_argument("--output", default="mlx-finetuned.bin")
     parser.add_argument("--atol", type=float, default=0.004)
     parser.add_argument("--rtol", type=float, default=0.002)
