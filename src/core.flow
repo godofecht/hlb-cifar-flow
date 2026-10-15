@@ -324,7 +324,13 @@ function norm_forward(p: Norm, x: Tensor, training: bool) -> Tensor {
             }
             variance = variance / (count as f32)
             p.running_mean[ch] = 0.6 * p.running_mean[ch] + 0.4 * mean
-            p.running_var[ch] = 0.6 * p.running_var[ch] + 0.4 * variance
+            # PyTorch BatchNorm updates running_var with the unbiased
+            # sample variance, but normalises the current batch with biased var.
+            let mut update_variance: f32 = variance
+            if count > 1 {
+                update_variance = variance * ((count as f32) / ((count-1) as f32))
+            }
+            p.running_var[ch] = 0.6 * p.running_var[ch] + 0.4 * update_variance
             p.mean[ch] = mean
             p.invstd[ch] = 1.0 / sqrtf(variance + 0.000000000001)
         } else {
