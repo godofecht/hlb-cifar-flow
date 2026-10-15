@@ -71,6 +71,7 @@ function evaluate(m: Model, d: Dataset, batch_size: i32, horizontal_tta: bool) -
 function main() -> i32 {
     let train_limit: i32 = env_int("HLB_TRAIN_LIMIT",256)
     let test_limit: i32 = env_int("HLB_EVAL_LIMIT",256)
+    let holdout_count: i32 = env_int("HLB_VAL_HOLDOUT",0)
     let width: i32 = env_int("HLB_WIDTH",8)
     let batch_size: i32 = env_int("HLB_BATCH",8)
     let epochs: i32 = env_int("HLB_EPOCHS",2)
@@ -84,14 +85,49 @@ function main() -> i32 {
 
     println("HLB CIFAR-10 / native Flow f32 CPU reference")
     println("Loading CIFAR-10 binary records")
-    let train: Dataset = load_train(train_limit)
-    let eval_data: Dataset = load_test(test_limit)
-    if train.count < 2 or eval_data.count < 1 {
-        println("Dataset missing or empty; run scripts/download-data.sh")
-        dataset_free(train)
-        dataset_free(eval_data)
+    let train_storage: Dataset = load_train(train_limit)
+    if train_storage.count < 2 {
+        println("Training dataset missing or empty; run scripts/download-data.sh")
+        dataset_free(train_storage)
         return 2
     }
+    if holdout_count > train_storage.count-2 {
+        println("HLB_VAL_HOLDOUT must leave at least two training examples")
+        dataset_free(train_storage)
+        return 2
+    }
+
+    # Optional held-out validation comes ONLY from the train batches. We
+    # calculate colour statistics on the remaining training partition.
+    # The official 10k test split stays unseen when using this mode.
+    let mut train: Dataset = Dataset {
+        images: train_storage.images, labels: train_storage.labels,
+        count: train_storage.count
+    }
+    let mut eval_data: Dataset = Dataset { images: null, labels: null, count: 0 }
+    if holdout_count > 0 {
+        train = Dataset {
+            images: train_storage.images,
+            labels: train_storage.labels,
+            count: train_storage.count-holdout_count
+        }
+        eval_data = Dataset {
+            images: train_storage.images+((train.count as i64)*3072),
+            labels: train_storage.labels+(train.count as i64),
+            count: holdout_count
+        }
+        println("Validation mode: held-out tail of original training split")
+    } else {
+        eval_data = load_test(test_limit)
+        println("Benchmark mode: official CIFAR-10 test set (do not tune on it)")
+    }
+    if eval_data.count < 1 {
+        println("Validation/test dataset missing or empty; run scripts/download-data.sh")
+        dataset_free(train_storage)
+        if holdout_count == 0 { dataset_free(eval_data) }
+        return 2
+    }
+
     let stats: Statistics = train_statistics(train)
     normalize_dataset(train,stats)
     normalize_dataset(eval_data,stats)
@@ -109,8 +145,8 @@ function main() -> i32 {
         free(order as ptr<f32>)
         model_free(ema)
         model_free(m)
-        dataset_free(train)
-        dataset_free(eval_data)
+        dataset_free(train_storage)
+        if holdout_count == 0 { dataset_free(eval_data) }
         return 2
     }
     let total_steps: i32 = steps_per_epoch * epochs
@@ -118,7 +154,7 @@ function main() -> i32 {
     let start_ns: i64 = flow_rt_monotonic_ns()
 
     print("training images "); println(train.count)
-    print("test images "); println(eval_data.count)
+    print("evaluation images "); println(eval_data.count)
     print("width "); println(width)
     print("batch "); println(batch_size)
     print("epochs "); println(epochs)
@@ -166,7 +202,7 @@ function main() -> i32 {
     free(order as ptr<f32>)
     model_free(ema)
     model_free(m)
-    dataset_free(train)
-    dataset_free(eval_data)
+    dataset_free(train_storage)
+    if holdout_count == 0 { dataset_free(eval_data) }
     return 0
 }
