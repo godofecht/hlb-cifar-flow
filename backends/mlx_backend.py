@@ -353,14 +353,77 @@ def run_train(args):
                       "checkpoint": args.output}, sort_keys=True))
 
 
+
+def run_init(args):
+    """Create a v2 model from genuine training records; Flow is not required."""
+    if not 2 <= args.width <= 64:
+        raise ValueError("--width must be in 2..64")
+    pixels, _ = read_binary_records(Path(args.data_dir), args.limit, train=True)
+    if len(pixels) < 2:
+        raise ValueError("Need >=2 training samples to initialise whitening")
+    # As with the Flow baseline, only training examples fit preprocessing.
+    mean = pixels.mean(axis=(0, 2, 3), dtype=np.float64).astype(np.float32)
+    std = np.maximum(pixels.std(axis=(0, 2, 3), dtype=np.float64), 1.0e-6)
+    invstd = (1.0 / std).astype(np.float32)
+    normalized_images = normalized(pixels, mean, invstd)
+    rng = np.random.default_rng(args.seed)
+    n = min(args.whiten_examples, len(pixels))
+    stride = args.whiten_stride
+    if not 1 <= stride <= 31:
+        raise ValueError("--whiten-stride must be within 1..31")
+    # Dense or strided 2x2 patches, without changing the image tensor ABI.
+    p = np.stack([normalized_images[:n, :, y:y + 2, x:x + 2]
+                  for y in range(0, 31, stride)
+                  for x in range(0, 31, stride)], axis=1).reshape(-1, 12)
+    covariance = np.cov(p.astype(np.float64), rowvar=False)
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    order = np.argsort(eigenvalues)[::-1]
+    filters = (eigenvectors[:, order].T /
+               np.sqrt(np.maximum(0.0, eigenvalues[order])[:, None] + 0.01))
+    whiten = np.concatenate([filters, -filters], axis=0).reshape(24, 3, 2, 2)
+
+    weights: dict[str, np.ndarray] = {"whitening": whiten.astype(np.float32)}
+    cin = 24
+    for block, cout in zip(BLOCKS, (args.width, args.width * 4, args.width * 8)):
+        scale = math.sqrt(2.0 / (cin * 9))
+        kernel = rng.uniform(-scale, scale, (cout, cin, 3, 3)).astype(np.float32)
+        old_mean, old_std = float(kernel.mean()), float(kernel.std())
+        for i in range(min(cin, cout)):
+            kernel[i, i, 1, 1] += 1.0
+        kernel = ((kernel - kernel.mean()) * (old_std / kernel.std()) +
+                  old_mean).astype(np.float32)
+        identity = np.zeros((cout, cout, 3, 3), dtype=np.float32)
+        for i in range(cout):
+            identity[i, i, 1, 1] = 1.0
+        weights[f"{block}.a"] = kernel
+        weights[f"{block}.b"] = identity
+        for norm_key in ("norm_a", "norm_b"):
+            prefix = f"{block}.{norm_key}"
+            weights[prefix + ".bias"] = np.zeros(cout, dtype=np.float32)
+            weights[prefix + ".running_mean"] = np.zeros(cout, dtype=np.float32)
+            weights[prefix + ".running_var"] = np.ones(cout, dtype=np.float32)
+        cin = cout
+    head_scale = math.sqrt(2.0 / (args.width * 8))
+    weights["head"] = rng.uniform(-head_scale, head_scale,
+                                  (args.width * 8, NCLASSES)).astype(np.float32)
+    params, running = load_parameters(weights)
+    write_checkpoint(Path(args.output), args.width, params, running, mean, invstd)
+    print(json.dumps({"backend": "mlx", "mode": "initialize", "width": args.width,
+                      "source": str(args.data_dir), "train_only_examples": len(pixels),
+                      "whitening_examples": n, "whitening_stride": stride,
+                      "checkpoint": args.output}, sort_keys=True))
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("parity", "grad-parity", "infer", "train"))
+    parser.add_argument("mode", choices=("parity", "grad-parity", "infer", "train", "init"))
     parser.add_argument("--checkpoint", default="hlb-ema.bin")
     parser.add_argument("--flow-logits", default="flow-parity.txt")
     parser.add_argument("--flow-gradients", default="flow-grads.txt")
     parser.add_argument("--data-dir", default="data/cifar-10-batches-bin")
     parser.add_argument("--limit", type=int, default=256)
+    parser.add_argument("--width", type=int, default=8)
+    parser.add_argument("--whiten-examples", type=int, default=1024)
+    parser.add_argument("--whiten-stride", type=int, default=8)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--holdout", type=int, default=16)
@@ -372,7 +435,7 @@ def main():
     parser.add_argument("--grad-atol", type=float, default=0.005)
     parser.add_argument("--grad-rtol", type=float, default=0.02)
     args = parser.parse_args()
-    {"parity": run_parity, "grad-parity": run_grad_parity, "infer": run_infer, "train": run_train}[args.mode](args)
+    {"parity": run_parity, "grad-parity": run_grad_parity, "infer": run_infer, "train": run_train, "init": run_init}[args.mode](args)
 
 
 if __name__ == "__main__":
