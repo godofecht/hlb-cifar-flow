@@ -108,12 +108,13 @@ function whitening_check() -> bool {
         d.images[i] = ((i*19 % 211) as f32) / 211.0
     }
     let conv: Conv = conv_new(3,24,2,0,false)
-    whitening_fit(conv,d,4)
+    whitening_fit_stride(conv,d,4,1)
     let mut ok: bool = true
     for i in 0 to 144 {
         if absf(conv.weight[i]+conv.weight[i+144]) > 0.00001 { ok = false }
         if not (conv.weight[i] < 100000.0 and conv.weight[i] > -100000.0) { ok = false }
     }
+    # Exhaustive-patch covariance must preserve the signed filter pairs.
     conv_free(conv)
     dataset_free(d)
     return ok
