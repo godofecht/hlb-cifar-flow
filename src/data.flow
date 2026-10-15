@@ -88,27 +88,27 @@ function load_train(limit: i32) -> Dataset {
     let mut pos: i32 = 0
     if pos < n {
         let count: i32 = load_file(d,"data/cifar-10-batches-bin/data_batch_1.bin",pos,n-pos)
-        if count < 0 { return d }
+        if count < 0 { return Dataset { images: d.images, labels: d.labels, count: 0 } }
         pos = pos + count
     }
     if pos < n {
         let count: i32 = load_file(d,"data/cifar-10-batches-bin/data_batch_2.bin",pos,n-pos)
-        if count < 0 { return d }
+        if count < 0 { return Dataset { images: d.images, labels: d.labels, count: 0 } }
         pos = pos + count
     }
     if pos < n {
         let count: i32 = load_file(d,"data/cifar-10-batches-bin/data_batch_3.bin",pos,n-pos)
-        if count < 0 { return d }
+        if count < 0 { return Dataset { images: d.images, labels: d.labels, count: 0 } }
         pos = pos + count
     }
     if pos < n {
         let count: i32 = load_file(d,"data/cifar-10-batches-bin/data_batch_4.bin",pos,n-pos)
-        if count < 0 { return d }
+        if count < 0 { return Dataset { images: d.images, labels: d.labels, count: 0 } }
         pos = pos + count
     }
     if pos < n {
         let count: i32 = load_file(d,"data/cifar-10-batches-bin/data_batch_5.bin",pos,n-pos)
-        if count < 0 { return d }
+        if count < 0 { return Dataset { images: d.images, labels: d.labels, count: 0 } }
         pos = pos + count
     }
     return Dataset { images: d.images, labels: d.labels, count: pos }
@@ -120,7 +120,7 @@ function load_test(limit: i32) -> Dataset {
     if n < 1 { n = 1 }
     let d: Dataset = dataset_create(n)
     let found: i32 = load_file(d,"data/cifar-10-batches-bin/test_batch.bin",0,n)
-    if found < 0 { return d }
+    if found < 0 { return Dataset { images: d.images, labels: d.labels, count: 0 } }
     return Dataset { images: d.images, labels: d.labels, count: found }
 }
 
@@ -224,6 +224,12 @@ function batch_from_dataset(d: Dataset, order: ptr<i32>, start: i32, count: i32,
     # HLB patches are 3x3 for the last six epochs, applied to a
     # random batch partner, with soft labels proportional to area.
     if cutmix and count > 1 {
+        # Snapshot both images and labels before mixing: partners must not
+        # depend on which samples were processed earlier in this batch.
+        let old_images: Tensor = tensor(count,3,32,32)
+        let old_targets: ptr<f32> = alloc_f32(count*CLASSES)
+        for i in 0 to count*3072 { old_images.data[i] = images.data[i] }
+        for i in 0 to count*CLASSES { old_targets[i] = targets[i] }
         for b in 0 to count {
             let peer: i32 = (random01()*(count as f32)) as i32
             let left: i32 = (random01()*30.0) as i32
@@ -233,15 +239,17 @@ function batch_from_dataset(d: Dataset, order: ptr<i32>, start: i32, count: i32,
                     for x in left to left+3 {
                         let out: i32 = tensor_index(images,b,ch,y,x)
                         let source: i32 = tensor_index(images,peer,ch,y,x)
-                        images.data[out] = images.data[source]
+                        images.data[out] = old_images.data[source]
                     }
                 }
             }
             let mix: f32 = 9.0/1024.0
             for cls in 0 to CLASSES {
-                targets[b*CLASSES+cls] = (1.0-mix)*targets[b*CLASSES+cls] + mix*targets[peer*CLASSES+cls]
+                targets[b*CLASSES+cls] = (1.0-mix)*old_targets[b*CLASSES+cls] + mix*old_targets[peer*CLASSES+cls]
             }
         }
+        tensor_free(old_images)
+        free(old_targets)
     }
     return Batch { images: images, targets: targets, labels: labels }
 }
