@@ -25,6 +25,7 @@ jobs:
       HLB_BATCH: '4'
       HLB_EPOCHS: '1'
       HLB_WHITEN_EXAMPLES: '32'
+      HLB_DISABLE_SPATIAL_AUGMENT: ${{ matrix.dataset == 'fashion-mnist' && '0' || '1' }}
       HLB_DUMP_PREDICTIONS: '1'
     steps:
       - uses: actions/checkout@v4
