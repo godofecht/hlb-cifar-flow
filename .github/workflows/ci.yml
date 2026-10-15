@@ -23,6 +23,8 @@ jobs:
         run: ../flow/flow run smoke.flow
       - name: Compile complete training entrypoint
         run: ../flow/flow compile train.flow
+      - name: Benchmark reference versus contiguous convolution
+        run: ../flow/flow run bench.flow
       - name: Generate small synthetic CIFAR binary fixtures
         run: python3 scripts/generate-fixture.py
       - name: Exercise end-to-end training and evaluation without PyTorch
