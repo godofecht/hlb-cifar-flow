@@ -237,6 +237,24 @@ function augmentation_check() -> bool {
     return ok
 }
 
+function running_variance_check() -> bool {
+    let norm: Norm = norm_new(1)
+    let x: Tensor = tensor(2,1,1,1)
+    x.data[0] = 0.0
+    x.data[1] = 2.0
+    let y: Tensor = norm_forward(norm,x,true)
+    let eval_output: Tensor = norm_forward(norm,x,false)
+    let ok: bool = absf(norm.running_mean[0]-0.4) < 0.000001 and
+        absf(norm.running_var[0]-1.4) < 0.000001 and
+        absf(y.data[0]+1.0) < 0.0001 and
+        absf(eval_output.data[0]+0.4/sqrtf(1.4)) < 0.0001
+    tensor_free(x)
+    tensor_free(y)
+    tensor_free(eval_output)
+    norm_free(norm)
+    return ok
+}
+
 function main() -> i32 {
     let a: bool = conv_gradient_check()
     let b: bool = gelu_gradient_check()
@@ -248,6 +266,7 @@ function main() -> i32 {
     let h: bool = conv_valid_padding_check()
     let i: bool = learning_rate_ratio_check()
     let j: bool = augmentation_check()
+    let k: bool = running_variance_check()
     print("conv_gradient "); println(a)
     print("gelu_gradient "); println(b)
     print("batchnorm_gradient "); println(c)
@@ -258,7 +277,8 @@ function main() -> i32 {
     print("valid_conv_matches_reference "); println(h)
     print("bias_lr_64x "); println(i)
     print("cutmix_normalized_labels "); println(j)
-    if a and b and c and d and e and f and g and h and i and j {
+    print("pytorch_running_bn_variance "); println(k)
+    if a and b and c and d and e and f and g and h and i and j and k {
         println("PASS")
         return 0
     }
