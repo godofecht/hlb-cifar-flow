@@ -1,0 +1,652 @@
+# Native Flow implementation of the HLB CIFAR-10 model and its derivatives.
+# NCHW, f32 CPU reference. No PyTorch, NumPy, C neural-net kernels or GPU shims.
+# This file intentionally has no main; train.flow and tests/smoke.flow import it.
+
+extern {
+    function malloc(size: i64) -> ptr<f32>
+    function free(p: ptr<f32>) -> void
+    function sqrtf(x: f32) -> f32
+    function expf(x: f32) -> f32
+    function logf(x: f32) -> f32
+    function erff(x: f32) -> f32
+    function flow_rt_monotonic_ns() -> i64
+}
+
+const CLASSES: i32 = 10
+const PIXELS: i32 = 32
+const SQRT2: f32 = 1.4142135623730951
+const INV_SQRT_2PI: f32 = 0.3989422804014327
+let mut random_state: i64 = 20261015
+
+function random01() -> f32 {
+    random_state = (random_state * 1103515245 + 12345) % 2147483648
+    return (random_state as f32) / 2147483648.0
+}
+
+function alloc_f32(n: i32) -> ptr<f32> {
+    let p: ptr<f32> = malloc((n as i64) * 4)
+    for i in 0 to n { p[i] = 0.0 }
+    return p
+}
+
+function alloc_i32(n: i32) -> ptr<i32> {
+    let p: ptr<i32> = malloc((n as i64) * 4) as ptr<i32>
+    for i in 0 to n { p[i] = 0 }
+    return p
+}
+
+struct Tensor {
+    data: ptr<f32>,
+    n: i32,
+    c: i32,
+    h: i32,
+    w: i32
+}
+
+function tensor(n: i32, c: i32, h: i32, w: i32) -> Tensor {
+    return Tensor { data: alloc_f32(n * c * h * w), n: n, c: c, h: h, w: w }
+}
+
+function tensor_index(t: Tensor, b: i32, ch: i32, y: i32, x: i32) -> i32 {
+    return ((b * t.c + ch) * t.h + y) * t.w + x
+}
+
+function tensor_free(t: Tensor) -> void { free(t.data) }
+
+function gelu(x: f32) -> f32 {
+    return 0.5 * x * (1.0 + erff(x / SQRT2))
+}
+
+function gelu_prime(x: f32) -> f32 {
+    return 0.5 * (1.0 + erff(x / SQRT2)) + x * INV_SQRT_2PI * expf(-0.5 * x * x)
+}
+
+function gelu_forward(x: Tensor) -> Tensor {
+    let out: Tensor = tensor(x.n, x.c, x.h, x.w)
+    for i in 0 to x.n * x.c * x.h * x.w { out.data[i] = gelu(x.data[i]) }
+    return out
+}
+
+function gelu_backward(pre: Tensor, dy: Tensor) -> Tensor {
+    let dx: Tensor = tensor(pre.n, pre.c, pre.h, pre.w)
+    for i in 0 to pre.n * pre.c * pre.h * pre.w {
+        dx.data[i] = dy.data[i] * gelu_prime(pre.data[i])
+    }
+    return dx
+}
+
+struct Conv {
+    weight: ptr<f32>,
+    grad: ptr<f32>,
+    velocity: ptr<f32>,
+    cin: i32,
+    cout: i32,
+    k: i32,
+    pad: i32
+}
+
+function conv_new(cin: i32, cout: i32, k: i32, pad: i32, dirac: bool) -> Conv {
+    let size: i32 = cin * cout * k * k
+    let weight: ptr<f32> = alloc_f32(size)
+    let std: f32 = sqrtf(2.0 / ((cin * k * k) as f32))
+    for oc in 0 to cout {
+        for ic in 0 to cin {
+            for ky in 0 to k {
+                for kx in 0 to k {
+                    let index: i32 = ((oc * cin + ic) * k + ky) * k + kx
+                    weight[index] = (random01() * 2.0 - 1.0) * std
+                    if dirac and ic == oc and ky == k / 2 and kx == k / 2 {
+                        weight[index] = weight[index] + 1.0
+                    }
+                }
+            }
+        }
+    }
+    return Conv {
+        weight: weight, grad: alloc_f32(size), velocity: alloc_f32(size),
+        cin: cin, cout: cout, k: k, pad: pad
+    }
+}
+
+function conv_count(c: Conv) -> i32 { return c.cin * c.cout * c.k * c.k }
+
+function conv_free(c: Conv) -> void {
+    free(c.weight)
+    free(c.grad)
+    free(c.velocity)
+}
+
+function conv_forward(c: Conv, x: Tensor) -> Tensor {
+    let h: i32 = x.h + 2 * c.pad - c.k + 1
+    let w: i32 = x.w + 2 * c.pad - c.k + 1
+    let y: Tensor = tensor(x.n, c.cout, h, w)
+    for b in 0 to x.n {
+        for oc in 0 to c.cout {
+            for oy in 0 to h {
+                for ox in 0 to w {
+                    let mut sum: f32 = 0.0
+                    for ic in 0 to c.cin {
+                        for ky in 0 to c.k {
+                            for kx in 0 to c.k {
+                                let iy: i32 = oy + ky - c.pad
+                                let ix: i32 = ox + kx - c.pad
+                                if iy >= 0 and iy < x.h and ix >= 0 and ix < x.w {
+                                    let wi: i32 = ((oc * c.cin + ic) * c.k + ky) * c.k + kx
+                                    sum = sum + x.data[tensor_index(x,b,ic,iy,ix)] * c.weight[wi]
+                                }
+                            }
+                        }
+                    }
+                    y.data[tensor_index(y,b,oc,oy,ox)] = sum
+                }
+            }
+        }
+    }
+    return y
+}
+
+# Accumulate dW, and calculate dX. Do not update weights before all backprop ends.
+function conv_backward(c: Conv, x: Tensor, dy: Tensor) -> Tensor {
+    let dx: Tensor = tensor(x.n, x.c, x.h, x.w)
+    for b in 0 to dy.n {
+        for oc in 0 to dy.c {
+            for oy in 0 to dy.h {
+                for ox in 0 to dy.w {
+                    let d: f32 = dy.data[tensor_index(dy,b,oc,oy,ox)]
+                    for ic in 0 to c.cin {
+                        for ky in 0 to c.k {
+                            for kx in 0 to c.k {
+                                let iy: i32 = oy + ky - c.pad
+                                let ix: i32 = ox + kx - c.pad
+                                if iy >= 0 and iy < x.h and ix >= 0 and ix < x.w {
+                                    let xi: i32 = tensor_index(x,b,ic,iy,ix)
+                                    let wi: i32 = ((oc * c.cin + ic) * c.k + ky) * c.k + kx
+                                    c.grad[wi] = c.grad[wi] + x.data[xi] * d
+                                    dx.data[xi] = dx.data[xi] + c.weight[wi] * d
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return dx
+}
+
+struct Norm {
+    bias: ptr<f32>,
+    grad: ptr<f32>,
+    velocity: ptr<f32>,
+    running_mean: ptr<f32>,
+    running_var: ptr<f32>,
+    mean: ptr<f32>,
+    invstd: ptr<f32>,
+    channels: i32
+}
+
+function norm_new(channels: i32) -> Norm {
+    let variance: ptr<f32> = alloc_f32(channels)
+    for i in 0 to channels { variance[i] = 1.0 }
+    return Norm {
+        bias: alloc_f32(channels), grad: alloc_f32(channels),
+        velocity: alloc_f32(channels), running_mean: alloc_f32(channels),
+        running_var: variance, mean: alloc_f32(channels),
+        invstd: alloc_f32(channels), channels: channels
+    }
+}
+
+function norm_free(p: Norm) -> void {
+    free(p.bias)
+    free(p.grad)
+    free(p.velocity)
+    free(p.running_mean)
+    free(p.running_var)
+    free(p.mean)
+    free(p.invstd)
+}
+
+# HLB uses affine batch norm with trainable bias, fixed gamma=1, momentum .4.
+function norm_forward(p: Norm, x: Tensor, training: bool) -> Tensor {
+    let y: Tensor = tensor(x.n,x.c,x.h,x.w)
+    let count: i32 = x.n * x.h * x.w
+    for ch in 0 to x.c {
+        let mut mean: f32 = 0.0
+        let mut variance: f32 = 0.0
+        if training {
+            for b in 0 to x.n {
+                for iy in 0 to x.h {
+                    for ix in 0 to x.w {
+                        mean = mean + x.data[tensor_index(x,b,ch,iy,ix)]
+                    }
+                }
+            }
+            mean = mean / (count as f32)
+            for b in 0 to x.n {
+                for iy in 0 to x.h {
+                    for ix in 0 to x.w {
+                        let delta: f32 = x.data[tensor_index(x,b,ch,iy,ix)] - mean
+                        variance = variance + delta * delta
+                    }
+                }
+            }
+            variance = variance / (count as f32)
+            p.running_mean[ch] = 0.6 * p.running_mean[ch] + 0.4 * mean
+            p.running_var[ch] = 0.6 * p.running_var[ch] + 0.4 * variance
+            p.mean[ch] = mean
+            p.invstd[ch] = 1.0 / sqrtf(variance + 0.000000000001)
+        } else {
+            mean = p.running_mean[ch]
+            variance = p.running_var[ch]
+        }
+        let inv: f32 = 1.0 / sqrtf(variance + 0.000000000001)
+        for b in 0 to x.n {
+            for iy in 0 to x.h {
+                for ix in 0 to x.w {
+                    let idx: i32 = tensor_index(x,b,ch,iy,ix)
+                    y.data[idx] = (x.data[idx] - mean) * inv + p.bias[ch]
+                }
+            }
+        }
+    }
+    return y
+}
+
+# Spatial+batch BN derivative for fixed gamma=1.
+function norm_backward(p: Norm, x: Tensor, dy: Tensor) -> Tensor {
+    let dx: Tensor = tensor(x.n,x.c,x.h,x.w)
+    let count: i32 = x.n * x.h * x.w
+    for ch in 0 to x.c {
+        let mut sum_d: f32 = 0.0
+        let mut sum_dxhat: f32 = 0.0
+        for b in 0 to x.n {
+            for iy in 0 to x.h {
+                for ix in 0 to x.w {
+                    let idx: i32 = tensor_index(x,b,ch,iy,ix)
+                    let xhat: f32 = (x.data[idx] - p.mean[ch]) * p.invstd[ch]
+                    sum_d = sum_d + dy.data[idx]
+                    sum_dxhat = sum_dxhat + dy.data[idx] * xhat
+                }
+            }
+        }
+        p.grad[ch] = p.grad[ch] + sum_d
+        for b in 0 to x.n {
+            for iy in 0 to x.h {
+                for ix in 0 to x.w {
+                    let idx: i32 = tensor_index(x,b,ch,iy,ix)
+                    let xhat: f32 = (x.data[idx] - p.mean[ch]) * p.invstd[ch]
+                    dx.data[idx] = p.invstd[ch] * (dy.data[idx] - (sum_d + xhat * sum_dxhat) / (count as f32))
+                }
+            }
+        }
+    }
+    return dx
+}
+
+# MaxPool2d(2) and its exact sparse scatter adjoint.
+function pool2_forward(x: Tensor, indices: ptr<i32>) -> Tensor {
+    let y: Tensor = tensor(x.n,x.c,x.h / 2,x.w / 2)
+    for b in 0 to y.n {
+        for ch in 0 to y.c {
+            for oy in 0 to y.h {
+                for ox in 0 to y.w {
+                    let mut best: f32 = -1000000000.0
+                    let mut arg: i32 = 0
+                    for ky in 0 to 2 {
+                        for kx in 0 to 2 {
+                            let idx: i32 = tensor_index(x,b,ch,oy*2+ky,ox*2+kx)
+                            if x.data[idx] > best {
+                                best = x.data[idx]
+                                arg = idx
+                            }
+                        }
+                    }
+                    let oi: i32 = tensor_index(y,b,ch,oy,ox)
+                    y.data[oi] = best
+                    indices[oi] = arg
+                }
+            }
+        }
+    }
+    return y
+}
+
+function pool2_backward(x: Tensor, dy: Tensor, indices: ptr<i32>) -> Tensor {
+    let dx: Tensor = tensor(x.n,x.c,x.h,x.w)
+    for i in 0 to dy.n * dy.c * dy.h * dy.w {
+        let idx: i32 = indices[i]
+        dx.data[idx] = dx.data[idx] + dy.data[i]
+    }
+    return dx
+}
+
+struct Block {
+    a: Conv,
+    b: Conv,
+    norm_a: Norm,
+    norm_b: Norm
+}
+
+struct BlockCache {
+    input: Tensor,
+    conv_a: Tensor,
+    pool: Tensor,
+    norm_a: Tensor,
+    act_a: Tensor,
+    conv_b: Tensor,
+    norm_b: Tensor,
+    output: Tensor,
+    pool_indices: ptr<i32>
+}
+
+function block_new(cin: i32, cout: i32) -> Block {
+    return Block {
+        a: conv_new(cin,cout,3,1,true),
+        b: conv_new(cout,cout,3,1,true),
+        norm_a: norm_new(cout),
+        norm_b: norm_new(cout)
+    }
+}
+
+function block_forward(block: Block, x: Tensor, training: bool) -> BlockCache {
+    let ca: Tensor = conv_forward(block.a,x)
+    let nout: i32 = ca.n * ca.c * (ca.h / 2) * (ca.w / 2)
+    let indices: ptr<i32> = alloc_i32(nout)
+    let p: Tensor = pool2_forward(ca,indices)
+    let na: Tensor = norm_forward(block.norm_a,p,training)
+    let aa: Tensor = gelu_forward(na)
+    let cb: Tensor = conv_forward(block.b,aa)
+    let nb: Tensor = norm_forward(block.norm_b,cb,training)
+    let ab: Tensor = gelu_forward(nb)
+    return BlockCache {
+        input: x, conv_a: ca, pool: p, norm_a: na, act_a: aa,
+        conv_b: cb, norm_b: nb, output: ab, pool_indices: indices
+    }
+}
+
+function block_backward(block: Block, c: BlockCache, dy: Tensor) -> Tensor {
+    let g1: Tensor = gelu_backward(c.norm_b,dy)
+    let g2: Tensor = norm_backward(block.norm_b,c.conv_b,g1)
+    let g3: Tensor = conv_backward(block.b,c.act_a,g2)
+    let g4: Tensor = gelu_backward(c.norm_a,g3)
+    let g5: Tensor = norm_backward(block.norm_a,c.pool,g4)
+    let g6: Tensor = pool2_backward(c.conv_a,g5,c.pool_indices)
+    let dx: Tensor = conv_backward(block.a,c.input,g6)
+    tensor_free(g1)
+    tensor_free(g2)
+    tensor_free(g3)
+    tensor_free(g4)
+    tensor_free(g5)
+    tensor_free(g6)
+    return dx
+}
+
+function block_cache_free(c: BlockCache) -> void {
+    tensor_free(c.conv_a)
+    tensor_free(c.pool)
+    tensor_free(c.norm_a)
+    tensor_free(c.act_a)
+    tensor_free(c.conv_b)
+    tensor_free(c.norm_b)
+    tensor_free(c.output)
+    free(c.pool_indices as ptr<f32>)
+}
+
+function block_free(b: Block) -> void {
+    conv_free(b.a)
+    conv_free(b.b)
+    norm_free(b.norm_a)
+    norm_free(b.norm_b)
+}
+
+struct Head {
+    weight: ptr<f32>,
+    grad: ptr<f32>,
+    velocity: ptr<f32>,
+    features: i32
+}
+
+function head_new(features: i32) -> Head {
+    let total: i32 = features * CLASSES
+    let w: ptr<f32> = alloc_f32(total)
+    let scale: f32 = sqrtf(2.0 / (features as f32))
+    for i in 0 to total { w[i] = (2.0 * random01() - 1.0) * scale }
+    return Head { weight: w, grad: alloc_f32(total), velocity: alloc_f32(total), features: features }
+}
+
+function head_free(h: Head) -> void {
+    free(h.weight)
+    free(h.grad)
+    free(h.velocity)
+}
+
+function global_max(x: Tensor, indices: ptr<i32>) -> Tensor {
+    let out: Tensor = tensor(x.n,x.c,1,1)
+    for b in 0 to x.n {
+        for ch in 0 to x.c {
+            let mut best: f32 = -1000000000.0
+            let mut arg: i32 = 0
+            for iy in 0 to x.h {
+                for ix in 0 to x.w {
+                    let idx: i32 = tensor_index(x,b,ch,iy,ix)
+                    if x.data[idx] > best { best = x.data[idx]; arg = idx }
+                }
+            }
+            out.data[b*x.c+ch] = best
+            indices[b*x.c+ch] = arg
+        }
+    }
+    return out
+}
+
+function global_max_backward(x: Tensor, dy: Tensor, indices: ptr<i32>) -> Tensor {
+    let dx: Tensor = tensor(x.n,x.c,x.h,x.w)
+    for i in 0 to dy.n * dy.c {
+        let idx: i32 = indices[i]
+        dx.data[idx] = dx.data[idx] + dy.data[i]
+    }
+    return dx
+}
+
+function head_forward(h: Head, x: Tensor) -> Tensor {
+    let out: Tensor = tensor(x.n,CLASSES,1,1)
+    for b in 0 to x.n {
+        for cls in 0 to CLASSES {
+            let mut score: f32 = 0.0
+            for ch in 0 to h.features {
+                score = score + x.data[b*h.features+ch] * h.weight[ch*CLASSES+cls]
+            }
+            out.data[b*CLASSES+cls] = score / 9.0
+        }
+    }
+    return out
+}
+
+function head_backward(h: Head, x: Tensor, dy: Tensor) -> Tensor {
+    let dx: Tensor = tensor(x.n,x.c,1,1)
+    for b in 0 to x.n {
+        for cls in 0 to CLASSES {
+            let delta: f32 = dy.data[b*CLASSES+cls] / 9.0
+            for ch in 0 to h.features {
+                let wi: i32 = ch * CLASSES + cls
+                h.grad[wi] = h.grad[wi] + delta * x.data[b*h.features+ch]
+                dx.data[b*h.features+ch] = dx.data[b*h.features+ch] + delta * h.weight[wi]
+            }
+        }
+    }
+    return dx
+}
+
+# Soft-label cross entropy and dlogits; target is [n,10], including CutMix.
+function cross_entropy(logits: Tensor, targets: ptr<f32>, dlogits: Tensor) -> f32 {
+    let mut loss: f32 = 0.0
+    for b in 0 to logits.n {
+        let mut mx: f32 = logits.data[b*CLASSES]
+        for k in 1 to CLASSES {
+            if logits.data[b*CLASSES+k] > mx { mx = logits.data[b*CLASSES+k] }
+        }
+        let mut total: f32 = 0.0
+        for k in 0 to CLASSES {
+            let e: f32 = expf(logits.data[b*CLASSES+k]-mx)
+            dlogits.data[b*CLASSES+k] = e
+            total = total + e
+        }
+        for k in 0 to CLASSES {
+            let probability: f32 = dlogits.data[b*CLASSES+k] / total
+            let smoothed: f32 = 0.8 * targets[b*CLASSES+k] + 0.02
+            loss = loss - smoothed * logf(probability + 0.0000001)
+            dlogits.data[b*CLASSES+k] = (probability - smoothed) / (logits.n as f32)
+        }
+    }
+    return loss / (logits.n as f32)
+}
+
+function predictions(logits: Tensor, labels: ptr<i32>) -> i32 {
+    let mut correct: i32 = 0
+    for b in 0 to logits.n {
+        let mut best: i32 = 0
+        for k in 1 to CLASSES {
+            if logits.data[b*CLASSES+k] > logits.data[b*CLASSES+best] { best = k }
+        }
+        if best == labels[b] { correct = correct + 1 }
+    }
+    return correct
+}
+
+struct Model {
+    whitening: Conv,
+    first: Block,
+    second: Block,
+    third: Block,
+    head: Head
+}
+
+struct ModelCache {
+    x: Tensor,
+    whitened: Tensor,
+    activated: Tensor,
+    first: BlockCache,
+    second: BlockCache,
+    third: BlockCache,
+    pooled: Tensor,
+    pool_indices: ptr<i32>,
+    logits: Tensor
+}
+
+function model_new(base: i32) -> Model {
+    return Model {
+        whitening: conv_new(3,24,2,0,false),
+        first: block_new(24,base),
+        second: block_new(base,base*4),
+        third: block_new(base*4,base*8),
+        head: head_new(base*8)
+    }
+}
+
+function model_forward(m: Model, x: Tensor, training: bool) -> ModelCache {
+    let w: Tensor = conv_forward(m.whitening,x)
+    let wa: Tensor = gelu_forward(w)
+    let a: BlockCache = block_forward(m.first,wa,training)
+    let b: BlockCache = block_forward(m.second,a.output,training)
+    let c: BlockCache = block_forward(m.third,b.output,training)
+    let arg: ptr<i32> = alloc_i32(c.output.n*c.output.c)
+    let p: Tensor = global_max(c.output,arg)
+    let logits: Tensor = head_forward(m.head,p)
+    return ModelCache {
+        x: x, whitened: w, activated: wa,
+        first: a, second: b, third: c,
+        pooled: p, pool_indices: arg, logits: logits
+    }
+}
+
+function model_backward(m: Model, c: ModelCache, targets: ptr<f32>) -> f32 {
+    let dl: Tensor = tensor(c.logits.n,CLASSES,1,1)
+    let loss: f32 = cross_entropy(c.logits,targets,dl)
+    let dp: Tensor = head_backward(m.head,c.pooled,dl)
+    let dc: Tensor = global_max_backward(c.third.output,dp,c.pool_indices)
+    let db: Tensor = block_backward(m.third,c.third,dc)
+    let da: Tensor = block_backward(m.second,c.second,db)
+    let dw: Tensor = block_backward(m.first,c.first,da)
+    # The whitening convolution is intentionally frozen, as in HLB.
+    tensor_free(dl)
+    tensor_free(dp)
+    tensor_free(dc)
+    tensor_free(db)
+    tensor_free(da)
+    tensor_free(dw)
+    return loss
+}
+
+function model_cache_free(c: ModelCache) -> void {
+    tensor_free(c.whitened)
+    tensor_free(c.activated)
+    block_cache_free(c.first)
+    block_cache_free(c.second)
+    block_cache_free(c.third)
+    tensor_free(c.pooled)
+    free(c.pool_indices as ptr<f32>)
+    tensor_free(c.logits)
+}
+
+function model_free(m: Model) -> void {
+    conv_free(m.whitening)
+    block_free(m.first)
+    block_free(m.second)
+    block_free(m.third)
+    head_free(m.head)
+}
+
+# Nesterov SGD with L2 regularisation. g is already averaged over the batch.
+function sgd_step(w: ptr<f32>, g: ptr<f32>, v: ptr<f32>, n: i32, lr: f32, decay: f32) -> void {
+    for i in 0 to n {
+        let grad: f32 = g[i] + decay * w[i]
+        v[i] = 0.85 * v[i] + grad
+        w[i] = w[i] - lr * (grad + 0.85 * v[i])
+        g[i] = 0.0
+    }
+}
+
+function block_step(b: Block, lr: f32, bias_lr: f32, wd: f32, bias_wd: f32) -> void {
+    sgd_step(b.a.weight,b.a.grad,b.a.velocity,conv_count(b.a),lr,wd)
+    sgd_step(b.b.weight,b.b.grad,b.b.velocity,conv_count(b.b),lr,wd)
+    sgd_step(b.norm_a.bias,b.norm_a.grad,b.norm_a.velocity,b.norm_a.channels,bias_lr,bias_wd)
+    sgd_step(b.norm_b.bias,b.norm_b.grad,b.norm_b.velocity,b.norm_b.channels,bias_lr,bias_wd)
+}
+
+function model_step(m: Model, lr: f32, batch_size: i32) -> void {
+    let wd: f32 = 0.0006687 * (batch_size as f32)
+    let bias_wd: f32 = wd / 64.0
+    block_step(m.first,lr,lr * 0.125,wd,bias_wd)
+    block_step(m.second,lr,lr * 0.125,wd,bias_wd)
+    block_step(m.third,lr,lr * 0.125,wd,bias_wd)
+    sgd_step(m.head.weight,m.head.grad,m.head.velocity,m.head.features*CLASSES,lr,wd)
+}
+
+function ema_array(dst: ptr<f32>, src: ptr<f32>, n: i32, decay: f32) -> void {
+    for i in 0 to n { dst[i] = decay * dst[i] + (1.0 - decay) * src[i] }
+}
+
+function ema_norm(dst: Norm, src: Norm, decay: f32) -> void {
+    ema_array(dst.bias,src.bias,src.channels,decay)
+    ema_array(dst.running_mean,src.running_mean,src.channels,decay)
+    ema_array(dst.running_var,src.running_var,src.channels,decay)
+}
+
+function ema_conv(dst: Conv, src: Conv, decay: f32) -> void {
+    ema_array(dst.weight,src.weight,conv_count(src),decay)
+}
+
+function ema_block(dst: Block, src: Block, decay: f32) -> void {
+    ema_conv(dst.a,src.a,decay)
+    ema_conv(dst.b,src.b,decay)
+    ema_norm(dst.norm_a,src.norm_a,decay)
+    ema_norm(dst.norm_b,src.norm_b,decay)
+}
+
+function model_ema_update(dst: Model, src: Model, decay: f32) -> void {
+    ema_conv(dst.whitening,src.whitening,decay)
+    ema_block(dst.first,src.first,decay)
+    ema_block(dst.second,src.second,decay)
+    ema_block(dst.third,src.third,decay)
+    ema_array(dst.head.weight,src.head.weight,src.head.features*CLASSES,decay)
+}
