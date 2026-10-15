@@ -668,6 +668,81 @@ function model_forward(m: Model, x: Tensor, training: bool) -> ModelCache {
     }
 }
 
+# Evaluation does not need argmax indices, the backward graph or any
+# retained activation caches. Free each activation as soon as it is consumed.
+# This reduces peak live activation memory compared with model_forward().
+function pool2_values(x: Tensor) -> Tensor {
+    let y: Tensor = tensor(x.n,x.c,x.h/2,x.w/2)
+    for b in 0 to y.n {
+        for ch in 0 to y.c {
+            for oy in 0 to y.h {
+                for ox in 0 to y.w {
+                    let mut best: f32 = -1000000000.0
+                    for ky in 0 to 2 {
+                        for kx in 0 to 2 {
+                            let value: f32 = x.data[tensor_index(x,b,ch,oy*2+ky,ox*2+kx)]
+                            if value > best { best = value }
+                        }
+                    }
+                    y.data[tensor_index(y,b,ch,oy,ox)] = best
+                }
+            }
+        }
+    }
+    return y
+}
+
+function global_max_values(x: Tensor) -> Tensor {
+    let out: Tensor = tensor(x.n,x.c,1,1)
+    for b in 0 to x.n {
+        for ch in 0 to x.c {
+            let mut best: f32 = -1000000000.0
+            for y in 0 to x.h {
+                for xx in 0 to x.w {
+                    let value: f32 = x.data[tensor_index(x,b,ch,y,xx)]
+                    if value > best { best = value }
+                }
+            }
+            out.data[b*x.c+ch] = best
+        }
+    }
+    return out
+}
+
+function block_predict(block: Block, input: Tensor) -> Tensor {
+    let a: Tensor = conv_forward(block.a,input)
+    let p: Tensor = pool2_values(a)
+    tensor_free(a)
+    let na: Tensor = norm_forward(block.norm_a,p,false)
+    tensor_free(p)
+    let aa: Tensor = gelu_forward(na)
+    tensor_free(na)
+    let b: Tensor = conv_forward(block.b,aa)
+    tensor_free(aa)
+    let nb: Tensor = norm_forward(block.norm_b,b,false)
+    tensor_free(b)
+    let out: Tensor = gelu_forward(nb)
+    tensor_free(nb)
+    return out
+}
+
+function model_predict(m: Model, x: Tensor) -> Tensor {
+    let w: Tensor = conv_forward(m.whitening,x)
+    let wa: Tensor = gelu_forward(w)
+    tensor_free(w)
+    let a: Tensor = block_predict(m.first,wa)
+    tensor_free(wa)
+    let b: Tensor = block_predict(m.second,a)
+    tensor_free(a)
+    let c: Tensor = block_predict(m.third,b)
+    tensor_free(b)
+    let pooled: Tensor = global_max_values(c)
+    tensor_free(c)
+    let logits: Tensor = head_forward(m.head,pooled)
+    tensor_free(pooled)
+    return logits
+}
+
 function model_backward(m: Model, c: ModelCache, targets: ptr<f32>) -> f32 {
     let dl: Tensor = tensor(c.logits.n,CLASSES,1,1)
     let loss: f32 = cross_entropy(c.logits,targets,dl)
