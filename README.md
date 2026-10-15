@@ -6,6 +6,49 @@ Upstream research reference: [tysam-code/hlb-CIFAR10](https://github.com/tysam-c
 
 > **Status:** Experimental CPU reference implementation; not an A100 speed record. Numerical test coverage is provided in `smoke.flow`. The GitHub Actions workflow is the authoritative compiler/build gate.
 
+## Evidence-backed parity: Flow CPU ↔ Apple MLX
+
+[**Full parity evidence, reproducible commands and unresolved gaps →**](docs/PARITY.md)
+
+On an Apple M1 GitHub Actions runner, the two implementations agreed on the
+same model's deterministic forward logits to **3.73e-9 maximum absolute
+difference**, and selected loss/analytic-gradient values versus MLX autodiff
+to **5.78e-6**. Real-data CPU training passed on Fashion-MNIST (vision),
+Free Spoken Digits (audio), UCI HAR (inertial time-series) and AG News (text).
+
+Independent macOS MLX experiments agreed on **all 80/80 per-example predicted
+classes** from the official test records (20 per modality) using the
+identical Flow-trained model checkpoint; these were tiny one-epoch experiments.
+This is *functional and numerical parity*, **not accuracy or speed parity**
+with the upstream HLB paper.
+
+Apple Silicon MLX implementation:
+[`backends/mlx_backend.py`](backends/mlx_backend.py).
+CI:
+[MLX forward/gradient parity](.github/workflows/mlx.yml),
+[real-modality Flow training](.github/workflows/modalities.yml), and
+[Flow-vs-MLX real-dataset predictions](.github/workflows/mlx-modalities.yml).
+
+```bash
+# On macOS 14+ with Apple Silicon, after native Flow has generated a checkpoint:
+python -m pip install mlx numpy
+python backends/mlx_backend.py parity --checkpoint hlb-ema.bin --flow-logits flow-parity.txt
+python backends/mlx_backend.py train --checkpoint hlb-current.bin --limit 40 --holdout 8 --epochs 1
+python backends/mlx_backend.py infer --checkpoint mlx-finetuned.bin --limit 20
+
+# MLX can also initialise PCA whitening and a new model without Flow pretraining:
+python backends/mlx_backend.py init --width 8 --limit 256 --output mlx-initial.bin
+python backends/mlx_backend.py train --checkpoint mlx-initial.bin --limit 256 --holdout 32 --epochs 2 --output mlx-trained.bin
+```
+
+These MLX commands require CIFAR-format records in `data/cifar-10-batches-bin/`.
+For non-vision modalities, run `python scripts/convert_modality.py
+--dataset spoken-digits --train 40 --test 20` (or choose one of the other
+supported datasets). The converter is Python-only *preprocessing*; all native
+Flow training computations are in Flow, and Apple accelerator training runs
+using MLX. Image flips/crops/CutMix are disabled for non-image modalities by
+setting `HLB_DISABLE_SPATIAL_AUGMENT=1`.
+
 ## Implemented
 
 | Component | Flow implementation |
