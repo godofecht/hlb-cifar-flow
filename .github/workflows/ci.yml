@@ -20,6 +20,6 @@ jobs:
           git fetch --depth=1 origin 69c8ec453941a1738ac06343bdcb440025610c67
           git checkout 69c8ec453941a1738ac06343bdcb440025610c67
       - name: Compile and exercise all native Flow numerical primitives
-        run: ../flow/flow run tests/smoke.flow
+        run: ../flow/flow run smoke.flow
       - name: Compile complete training entrypoint
         run: ../flow/flow compile train.flow
