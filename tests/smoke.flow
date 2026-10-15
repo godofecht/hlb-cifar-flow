@@ -1,9 +1,9 @@
 # Deterministic numeric checks of the native Flow training primitives.
 # Run from repository root: flow run tests/smoke.flow
 
-import "src/core.flow"
-import "src/data.flow"
-import "src/whitening.flow"
+import "../src/core.flow"
+import "../src/data.flow"
+import "../src/whitening.flow"
 
 function absf(x: f32) -> f32 {
     if x < 0.0 { return 0.0-x }
