@@ -12,7 +12,11 @@ function main() -> i32 {
     let width: i32 = env_int("HLB_WIDTH",2)
     let model: Model = model_new(width)
     let stats: Statistics = Statistics { mean: alloc_f32(3), invstd: alloc_f32(3) }
-    if not checkpoint_load("hlb-ema.bin",model,width,stats) {
+    let mut path: string = "hlb-ema.bin"
+    if env_int("HLB_USE_MLX_CHECKPOINT",0) == 1 {
+        path = "mlx-finetuned.bin"
+    }
+    if not checkpoint_load(path,model,width,stats) {
         println("Failed to load Flow v2 checkpoint")
         model_free(model)
         statistics_free(stats)
