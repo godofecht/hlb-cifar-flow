@@ -116,7 +116,46 @@ function conv_free(c: Conv) -> void {
     free(c.velocity)
 }
 
+# Spatially contiguous direct convolution: each filter coefficient is loaded
+# once per inner pixel row and contributes to a contiguous output slice.
+# This avoids input/channel/mask decoding for every multiply-add.
+# The independent reference implementation stays below for regression testing.
 function conv_forward(c: Conv, x: Tensor) -> Tensor {
+    let h: i32 = x.h + 2*c.pad - c.k + 1
+    let w: i32 = x.w + 2*c.pad - c.k + 1
+    let y: Tensor = tensor(x.n,c.cout,h,w)
+    for b in 0 to x.n {
+        for oc in 0 to c.cout {
+            let out_base: i32 = (b*c.cout+oc)*h*w
+            for ic in 0 to c.cin {
+                let in_base: i32 = (b*x.c+ic)*x.h*x.w
+                for ky in 0 to c.k {
+                    for oy in 0 to h {
+                        let iy: i32 = oy+ky-c.pad
+                        if iy >= 0 and iy < x.h {
+                            for kx in 0 to c.k {
+                                let wi: i32 = ((oc*c.cin+ic)*c.k+ky)*c.k+kx
+                                let weight: f32 = c.weight[wi]
+                                let mut left: i32 = c.pad-kx
+                                if left < 0 { left = 0 }
+                                let mut right: i32 = x.w+c.pad-kx
+                                if right > w { right = w }
+                                let o: i32 = out_base+oy*w
+                                let input: i32 = in_base+iy*x.w+kx-c.pad
+                                for ox in left to right {
+                                    y.data[o+ox] = y.data[o+ox] + weight*x.data[input+ox]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return y
+}
+
+function conv_forward_reference(c: Conv, x: Tensor) -> Tensor {
     let h: i32 = x.h + 2 * c.pad - c.k + 1
     let w: i32 = x.w + 2 * c.pad - c.k + 1
     let y: Tensor = tensor(x.n, c.cout, h, w)
@@ -146,7 +185,47 @@ function conv_forward(c: Conv, x: Tensor) -> Tensor {
 }
 
 # Accumulate dW, and calculate dX. Do not update weights before all backprop ends.
+# dInput and dWeight for the contiguous kernel above.
+# The per-filter gradient is accumulated in a local scalar and written once.
 function conv_backward(c: Conv, x: Tensor, dy: Tensor) -> Tensor {
+    let dx: Tensor = tensor(x.n,x.c,x.h,x.w)
+    for b in 0 to x.n {
+        for oc in 0 to c.cout {
+            let out_base: i32 = (b*c.cout+oc)*dy.h*dy.w
+            for ic in 0 to c.cin {
+                let in_base: i32 = (b*x.c+ic)*x.h*x.w
+                for ky in 0 to c.k {
+                    for kx in 0 to c.k {
+                        let wi: i32 = ((oc*c.cin+ic)*c.k+ky)*c.k+kx
+                        let weight: f32 = c.weight[wi]
+                        let mut grad: f32 = c.grad[wi]
+                        let mut left: i32 = c.pad-kx
+                        if left < 0 { left = 0 }
+                        let mut right: i32 = x.w+c.pad-kx
+                        if right > dy.w { right = dy.w }
+                        for oy in 0 to dy.h {
+                            let iy: i32 = oy+ky-c.pad
+                            if iy >= 0 and iy < x.h {
+                                let o: i32 = out_base+oy*dy.w
+                                let input: i32 = in_base+iy*x.w+kx-c.pad
+                                for ox in left to right {
+                                    let index: i32 = input+ox
+                                    let d: f32 = dy.data[o+ox]
+                                    grad = grad+x.data[index]*d
+                                    dx.data[index] = dx.data[index]+weight*d
+                                }
+                            }
+                        }
+                        c.grad[wi] = grad
+                    }
+                }
+            }
+        }
+    }
+    return dx
+}
+
+function conv_backward_reference(c: Conv, x: Tensor, dy: Tensor) -> Tensor {
     let dx: Tensor = tensor(x.n, x.c, x.h, x.w)
     for b in 0 to dy.n {
         for oc in 0 to dy.c {
@@ -604,6 +683,7 @@ function model_free(m: Model) -> void {
 }
 
 # Nesterov SGD with L2 regularisation. g is already averaged over the batch.
+# The original HLB bias learning rate is 64x the other parameters, not 1/8x.
 function sgd_step(w: ptr<f32>, g: ptr<f32>, v: ptr<f32>, n: i32, lr: f32, decay: f32) -> void {
     for i in 0 to n {
         let grad: f32 = g[i] + decay * w[i]
@@ -623,9 +703,9 @@ function block_step(b: Block, lr: f32, bias_lr: f32, wd: f32, bias_wd: f32) -> v
 function model_step(m: Model, lr: f32, batch_size: i32) -> void {
     let wd: f32 = 0.0006687 * (batch_size as f32) / 512.0
     let bias_wd: f32 = wd / 64.0
-    block_step(m.first,lr,lr * 0.125,wd,bias_wd)
-    block_step(m.second,lr,lr * 0.125,wd,bias_wd)
-    block_step(m.third,lr,lr * 0.125,wd,bias_wd)
+    block_step(m.first,lr,lr * 64.0,wd,bias_wd)
+    block_step(m.second,lr,lr * 64.0,wd,bias_wd)
+    block_step(m.third,lr,lr * 64.0,wd,bias_wd)
     sgd_step(m.head.weight,m.head.grad,m.head.velocity,m.head.features*CLASSES,lr,wd)
 }
 
