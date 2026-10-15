@@ -24,7 +24,7 @@ Upstream research reference: [tysam-code/hlb-CIFAR10](https://github.com/tysam-c
 | Evaluation | Horizontal-flip logit averaging, separate EMA weight model |
 | Verification | Finite-difference gradients, convolution reference parity, pooling adjoint, BN running variance, whitening symmetry, checkpoint roundtrip |
 | Checkpoints | Versioned f32 model and train-only RGB normalisation in `hlb-current.bin` and `hlb-ema.bin` |
-| Inference | Standalone `infer.flow` restores EMA checkpoint and evaluates with horizontal-flip test-time augmentation |
+| Inference | Standalone `infer.flow` restores EMA checkpoint, evaluates with horizontal-flip TTA, and frees intermediate activations immediately |
 
 The native Flow code is in [src/core.flow](src/core.flow), [src/data.flow](src/data.flow) and [src/whitening.flow](src/whitening.flow), and [src/checkpoint.flow](src/checkpoint.flow). All forward passes and gradient updates are implemented in those files.
 
@@ -72,7 +72,9 @@ First verify gradient agreement on synthetic small problems with finite differen
 
 Report data preparation, PCA whitening, training and evaluation times **separately**. The original benchmark deliberately does not include all of them in its headline training time.
 
-CI also checks exact checkpoint roundtrips, an opt-in held-out validation partition, and standalone inference after a synthetic training run.
+CI also checks exact checkpoint roundtrips, an opt-in held-out validation partition, streaming-inference numerical parity, and standalone inference after a synthetic training run.
+
+For genuine CIFAR-10 measurements, trigger the [manual real-data workflow](.github/workflows/real-data.yml) from GitHub Actions. It downloads the original binary archive from the University of Toronto, reserves a training-only validation holdout, trains in native Flow, and uploads the model artifacts. Its conservative CPU defaults are for correctness, **not** reproducing HLB accuracy or GPU timing. The synthetic-fixture workflow does not exercise the official image dataset.
 
 CI additionally generates a **synthetic** CIFAR-binary fixture with `scripts/generate-fixture.py` and performs an end-to-end train/evaluate run. Those generated pixels are not part of the official CIFAR-10 dataset and must never be used for accuracy claims.
 
