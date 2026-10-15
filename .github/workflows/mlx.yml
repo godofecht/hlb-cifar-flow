@@ -1,0 +1,68 @@
+name: Apple Silicon MLX / native Flow parity
+on:
+  push:
+    paths:
+      - 'backends/**'
+      - 'src/**'
+      - 'parity.flow'
+      - 'train.flow'
+      - 'smoke.flow'
+      - 'scripts/generate-fixture.py'
+      - '.github/workflows/mlx.yml'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  mlx-flow-parity:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Apple MLX and numeric IO
+        run: python -m pip install 'mlx>=0.30,<0.34' 'numpy>=1.26,<3'
+      - name: Verify native arm64 MLX
+        run: |
+          uname -m
+          python -c 'import platform, mlx.core as mx; assert platform.machine()=="arm64"; print("MLX:", mx.__version__ if hasattr(mx,"__version__") else "installed"); print("Device:", mx.default_device())'
+      - name: Pin and prepare Flow self-hosted compiler
+        run: |
+          git clone --depth=1 https://github.com/flooooooooooow/flow.git ../flow
+          cd ../flow
+          git fetch --depth=1 origin 69c8ec453941a1738ac06343bdcb440025610c67
+          git checkout 69c8ec453941a1738ac06343bdcb440025610c67
+      - name: Flow native gradients and convolution reference
+        run: ../flow/flow run smoke.flow
+      - name: Generate deterministic synthetic CIFAR-format records
+        run: python scripts/generate-fixture.py
+      - name: Create genuine native Flow checkpoint and compare logits
+        env:
+          HLB_TRAIN_LIMIT: '16'
+          HLB_EVAL_LIMIT: '8'
+          HLB_WIDTH: '2'
+          HLB_BATCH: '2'
+          HLB_EPOCHS: '1'
+          HLB_WHITEN_EXAMPLES: '16'
+        run: |
+          ../flow/flow run train.flow
+          ../flow/flow run parity.flow > flow-parity.txt
+          python backends/mlx_backend.py parity --checkpoint hlb-ema.bin --flow-logits flow-parity.txt
+      - name: Apple MLX checkpoint inference
+        run: python backends/mlx_backend.py infer --checkpoint hlb-ema.bin --limit 8 --batch 2
+      - name: Apple MLX autograd fine-tune and Flow-compatible checkpoint roundtrip
+        run: |
+          python backends/mlx_backend.py train --checkpoint hlb-current.bin --limit 16 --holdout 4 --batch 2 --epochs 1 --lr-scale 0.01 --output mlx-finetuned.bin
+          python backends/mlx_backend.py infer --checkpoint mlx-finetuned.bin --limit 8 --batch 2
+      - name: Upload parity proof artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlx-flow-parity
+          path: |
+            flow-parity.txt
+            hlb-ema.bin
+            mlx-finetuned.bin
+          if-no-files-found: ignore
+          retention-days: 7
