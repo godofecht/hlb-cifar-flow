@@ -51,7 +51,7 @@ function main() -> i32 {
     while start < dataset.count {
         let count: i32 = inference_min(batch_size,dataset.count-start)
         let batch: Batch = batch_from_dataset(dataset,order,start,count,false,false)
-        let forward: ModelCache = model_forward(m,batch.images,false)
+        let logits: Tensor = model_predict(m,batch.images)
 
         # Match HLB's mean-logit evaluation under horizontal reflection.
         let flipped: Tensor = tensor(count,3,32,32)
@@ -65,14 +65,14 @@ function main() -> i32 {
                 }
             }
         }
-        let other: ModelCache = model_forward(m,flipped,false)
+        let other: Tensor = model_predict(m,flipped)
         for i in 0 to count*CLASSES {
-            forward.logits.data[i] = 0.5*(forward.logits.data[i]+other.logits.data[i])
+            logits.data[i] = 0.5*(logits.data[i]+other.data[i])
         }
 
-        correct = correct + predictions(forward.logits,batch.labels)
-        model_cache_free(forward)
-        model_cache_free(other)
+        correct = correct + predictions(logits,batch.labels)
+        tensor_free(logits)
+        tensor_free(other)
         tensor_free(flipped)
         batch_free(batch)
         start = start+count
