@@ -250,8 +250,9 @@ def normalized(x, mean, invstd):
     return (x - mean[None, :, None, None]) * invstd[None, :, None, None]
 
 
-def evaluate(params, running, x, labels, batch):
+def evaluate(params, running, x, labels, batch, return_predictions=False):
     correct = 0
+    predictions_all = []
     for start in range(0, len(labels), batch):
         xb = _as_nhwc(x[start:start + batch])
         out, _ = forward(params, running, xb)
@@ -260,7 +261,10 @@ def evaluate(params, running, x, labels, batch):
         mx.eval(logits)
         guess = np.asarray(mx.argmax(logits, axis=-1))
         correct += int(np.sum(guess == labels[start:start + batch]))
-    return correct / len(labels)
+        if return_predictions:
+            predictions_all.extend(int(v) for v in guess)
+    accuracy = correct / len(labels)
+    return (accuracy, predictions_all) if return_predictions else accuracy
 
 
 def run_infer(args):
@@ -269,11 +273,11 @@ def run_infer(args):
     x, labels = read_binary_records(Path(args.data_dir), args.limit, train=False)
     x = normalized(x, mean, invstd)
     start = time.perf_counter()
-    accuracy = evaluate(params, running, x, labels, args.batch)
+    accuracy, predictions = evaluate(params, running, x, labels, args.batch, True)
     elapsed = time.perf_counter() - start
     print(json.dumps({"backend": "mlx", "mode": "inference", "model_width": width,
                       "examples": len(labels), "accuracy": accuracy,
-                      "elapsed_seconds": elapsed}, sort_keys=True))
+                      "predictions": predictions, "elapsed_seconds": elapsed}, sort_keys=True))
 
 
 def run_train(args):
