@@ -27,7 +27,11 @@ function random_u31() -> i32 {
 # f32 can round UP to 1.0, producing an out-of-bounds random index.
 function random_index(n: i32) -> i32 {
     if n <= 1 { return 0 }
-    return random_u31() % n
+    # Use the high bits of the 31-bit LCG draw: its low bit alternates,
+    # which makes modulo-2 selections pathological for CutMix/shuffling.
+    # 64-bit multiplication prevents overflow and always returns [0,n).
+    let product: i64 = (random_u31() as i64)*(n as i64)
+    return (product / 2147483648) as i32
 }
 
 function random01() -> f32 {
