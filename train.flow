@@ -1,0 +1,170 @@
+# HLB-CIFAR10 reimplementation in native Flow.
+# Compile/run with the self-hosted Flow compiler:
+#   flow run train.flow
+#
+# Configurable through HLB_TRAIN_LIMIT, HLB_EVAL_LIMIT, HLB_WIDTH, HLB_BATCH,
+# HLB_EPOCHS, HLB_WHITEN_EXAMPLES. Defaults intentionally make CPU smoke
+# experiments feasible; full CIFAR-10 and HLB widths require accelerators.
+#
+# No external ML runtime: training, loss, gradients, whitening, augmentation,
+# optimizer, EMA and evaluation are performed by Flow code.
+
+import "src/core.flow"
+import "src/data.flow"
+import "src/whitening.flow"
+
+extern {
+    function printf(fmt: string, value: f64) -> i32
+}
+
+function min_i32(a: i32, b: i32) -> i32 {
+    if a < b { return a }
+    return b
+}
+
+# Linear OneCycle with pct_start=.23 and final=7% max LR.
+# Original HLB scales cross-entropy by 512/batch and uses max_lr=1.525/512;
+# here loss uses batch mean and hence max_lr=1.525.
+function learning_rate(step: i32, total_steps: i32) -> f32 {
+    if total_steps < 2 { return 0.1 }
+    let progress: f32 = (step as f32)/((total_steps-1) as f32)
+    if progress < 0.23 { return 1.525*progress/0.23 }
+    return 1.525*(1.0-0.93*(progress-0.23)/0.77)
+}
+
+function evaluate(m: Model, d: Dataset, batch_size: i32, horizontal_tta: bool) -> f32 {
+    let order: ptr<i32> = shuffled_indices(d.count)
+    let mut correct: i32 = 0
+    let mut start: i32 = 0
+    while start < d.count {
+        let n: i32 = min_i32(batch_size,d.count-start)
+        let batch: Batch = batch_from_dataset(d,order,start,n,false,false)
+        let forward: ModelCache = model_forward(m,batch.images,false)
+        if horizontal_tta {
+            let flipped: Tensor = tensor(n,3,32,32)
+            for b in 0 to n {
+                for ch in 0 to 3 {
+                    for y in 0 to 32 {
+                        for x in 0 to 32 {
+                            flipped.data[tensor_index(flipped,b,ch,y,x)] =
+                                batch.images.data[tensor_index(batch.images,b,ch,y,31-x)]
+                        }
+                    }
+                }
+            }
+            let other: ModelCache = model_forward(m,flipped,false)
+            for i in 0 to n*CLASSES {
+                forward.logits.data[i] = 0.5*(forward.logits.data[i]+other.logits.data[i])
+            }
+            model_cache_free(other)
+            tensor_free(flipped)
+        }
+        correct = correct + predictions(forward.logits,batch.labels)
+        model_cache_free(forward)
+        batch_free(batch)
+        start = start+n
+    }
+    free(order as ptr<f32>)
+    return (correct as f32)/(d.count as f32)
+}
+
+function main() -> i32 {
+    let train_limit: i32 = env_int("HLB_TRAIN_LIMIT",256)
+    let test_limit: i32 = env_int("HLB_EVAL_LIMIT",256)
+    let width: i32 = env_int("HLB_WIDTH",8)
+    let batch_size: i32 = env_int("HLB_BATCH",8)
+    let epochs: i32 = env_int("HLB_EPOCHS",2)
+    let whiten_examples: i32 = env_int("HLB_WHITEN_EXAMPLES",1024)
+
+    if width > 64 or batch_size > 1024 or width < 2 or batch_size < 2 {
+        println("Invalid width/batch; width must be 2..64 and batch 2..1024")
+        return 2
+    }
+
+    println("HLB CIFAR-10 / native Flow f32 CPU reference")
+    println("Loading CIFAR-10 binary records")
+    let train: Dataset = load_train(train_limit)
+    let test: Dataset = load_test(test_limit)
+    if train.count < 2 or test.count < 1 {
+        println("Dataset missing or empty; run scripts/download-data.sh")
+        dataset_free(train)
+        dataset_free(test)
+        return 2
+    }
+    let stats: Statistics = train_statistics(train)
+    normalize_dataset(train,stats)
+    normalize_dataset(test,stats)
+    statistics_free(stats)
+
+    let m: Model = model_new(width)
+    whitening_fit(m.whitening,train,whiten_examples)
+    let ema: Model = model_new(width)
+    model_ema_update(ema,m,0.0)
+
+    let order: ptr<i32> = shuffled_indices(train.count)
+    let steps_per_epoch: i32 = train.count / batch_size
+    if steps_per_epoch < 1 {
+        println("HLB_BATCH is larger than the training subset")
+        free(order as ptr<f32>)
+        model_free(ema)
+        model_free(m)
+        dataset_free(train)
+        dataset_free(test)
+        return 2
+    }
+    let total_steps: i32 = steps_per_epoch * epochs
+    let mut step: i32 = 0
+    let start_ns: i64 = flow_rt_monotonic_ns()
+
+    print("training images "); println(train.count)
+    print("test images "); println(test.count)
+    print("width "); println(width)
+    print("batch "); println(batch_size)
+    print("epochs "); println(epochs)
+
+    for epoch in 0 to epochs {
+        shuffle_indices(order,train.count)
+        let mut train_loss: f32 = 0.0
+        for batch_index in 0 to steps_per_epoch {
+            let cutmix: bool = epoch >= epochs-6
+            let batch: Batch = batch_from_dataset(
+                train,order,batch_index*batch_size,batch_size,true,cutmix)
+            let c: ModelCache = model_forward(m,batch.images,true)
+            let loss: f32 = model_backward(m,c,batch.targets)
+            train_loss = train_loss + loss
+            model_cache_free(c)
+            let lr: f32 = learning_rate(step,total_steps)
+            model_step(m,lr,batch_size)
+            step = step+1
+
+            # HLB blends weights late in training; keep a separate EMA model.
+            # Original code additionally writes blended weights back; this
+            # implementation uses a conventional evaluation EMA.
+            if epoch >= epochs-10 and step % 5 == 0 {
+                model_ema_update(ema,m,0.95)
+            }
+            batch_free(batch)
+        }
+        let val_accuracy: f32 = evaluate(m,test,batch_size,true)
+        let ema_accuracy: f32 = evaluate(ema,test,batch_size,true)
+        print("epoch "); print(epoch+1)
+        print(" train_loss ")
+        let _l: i32 = printf("%.5f", (train_loss / (steps_per_epoch as f32)) as f64)
+        print(" eval_accuracy ")
+        let _a: i32 = printf("%.4f",val_accuracy as f64)
+        print(" ema_eval_accuracy ")
+        let _e: i32 = printf("%.4f\n",ema_accuracy as f64)
+    }
+
+    let end_ns: i64 = flow_rt_monotonic_ns()
+    print("CPU training + validation seconds: ")
+    let _time: i32 = printf("%.3f\n",((end_ns-start_ns) as f64)/1000000000.0)
+    println("No A100/CUDA performance claim; see README limitations.")
+
+    free(order as ptr<f32>)
+    model_free(ema)
+    model_free(m)
+    dataset_free(train)
+    dataset_free(test)
+    return 0
+}
