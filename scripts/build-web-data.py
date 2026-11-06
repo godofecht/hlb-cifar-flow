@@ -12,6 +12,7 @@ URL = "https://www.cs.toronto.edu/~kriz/cifar-10-binary.tar.gz"
 MD5 = "c32a1d4ab5d03f1284b67883e8d87530"
 RECORD = 3073
 MIRRORS = (
+    "https://data.brainchip.com/dataset-mirror/cifar10/cifar-10-binary.tar.gz",
     "https://mirror.tensorflow.org/www.cs.toronto.edu/~kriz/cifar-10-binary.tar.gz",
     "https://cave.cs.toronto.edu/kriz/cifar-10-binary.tar.gz",
     URL,
