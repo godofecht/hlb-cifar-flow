@@ -72,6 +72,12 @@ setting `HLB_DISABLE_SPATIAL_AUGMENT=1`.
 
 The native Flow code is in [src/core.flow](src/core.flow), [src/data.flow](src/data.flow) and [src/whitening.flow](src/whitening.flow), and [src/checkpoint.flow](src/checkpoint.flow). All forward passes and gradient updates are implemented in those files.
 
+## Run the model in a browser
+
+[**Live GitHub Pages Flow laboratory**](https://godofecht.github.io/hlb-cifar-flow/) · [Implementation, provenance and reproducibility](docs/BROWSER.md)
+
+The Pages site builds the **same Flow** training and inference entrypoints into WebAssembly, and executes them on genuine CIFAR-10 mini-splits directly on the visitor's CPU. View real loss and accuracy curves, inspect predictions and export the EMA checkpoint. This is a correctness-oriented, tiny-dataset browser demonstration, not an A100-speed or full accuracy claim. Deployment uses the verified Pages workflow; GitHub Pages must have **GitHub Actions** selected as its source in repository Settings.
+
 ## Run
 
 Install Flow 2.0 or build its [self-hosted compiler](https://github.com/flooooooooooow/flow). A C11 toolchain is required. Linux and macOS are supported by Flow's stable portable-C backend.

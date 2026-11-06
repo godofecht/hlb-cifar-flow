@@ -1,0 +1,92 @@
+name: Live Flow CIFAR-10 WebAssembly Pages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flow-wasm-pages-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  wasm-build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: emscripten-core/setup-emsdk@v16
+        with:
+          version: '4.0.15'
+      - name: Validate browser JavaScript syntax
+        run: |
+          node --check web/app.js
+          node --check web/trainer.worker.js
+          node --check scripts/test-browser-wasm.cjs
+      - name: Check Emscripten
+        run: emcc --version
+      - name: Checkout pinned native Flow compiler
+        run: |
+          git clone --depth=1 https://github.com/flooooooooooow/flow.git ../flow
+          cd ../flow
+          git fetch --depth=1 origin 69c8ec453941a1738ac06343bdcb440025610c67
+          git checkout 69c8ec453941a1738ac06343bdcb440025610c67
+      - name: Compile existing Flow training and inference entrypoints to C
+        run: |
+          ../flow/flow compile train.flow
+          ../flow/flow compile infer.flow
+          test -s ../flow/build/train.c
+          test -s ../flow/build/infer.c
+      - name: Build actual Flow WASM modules
+        run: |
+          mkdir -p site
+          for program in train infer; do
+            if [ "$program" = "train" ]; then factory=createFlowTrainer; else factory=createFlowInference; fi
+            emcc "../flow/build/$program.c" web/config.c ../flow/runtime/flow_rt_support.c \
+              -O2 -o "site/$program.js" \
+              -sWASM=1 -sMODULARIZE=1 -sEXPORT_NAME="$factory" \
+              -sENVIRONMENT=web,worker,node -sINVOKE_RUN=0 \
+              -sEXIT_RUNTIME=0 -sFORCE_FILESYSTEM=1 \
+              -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=536870912 \
+              -sINITIAL_MEMORY=134217728 -sSTACK_SIZE=16777216 \
+              -sEXPORTED_FUNCTIONS='["_main","_flow_web_configure"]' \
+              -sEXPORTED_RUNTIME_METHODS='["FS","callMain"]'
+          done
+          test -s site/train.wasm && test -s site/infer.wasm
+      - name: Build source-verified genuine CIFAR-10 subsets
+        run: python3 scripts/build-web-data.py
+      - name: Run real Flow training and inference in WebAssembly under Node
+        run: node scripts/test-browser-wasm.cjs
+      - name: Stage frontend
+        run: |
+          cp web/index.html web/app.js web/trainer.worker.js site/
+          touch site/.nojekyll
+      - name: Archive validated static site
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-flow-cifar10-site
+          path: site/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: site/
+
+  deploy-pages:
+    if: github.event_name != 'pull_request'
+    needs: wasm-build-and-test
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
