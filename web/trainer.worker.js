@@ -56,7 +56,8 @@ function receiveLine(phase, text) {
 
 function configureAndExecute(mod, cfg, dump) {
     const rc = mod._flow_web_configure(
-        cfg.train, cfg.eval, cfg.width, cfg.batch, cfg.epochs, 0, dump
+        cfg.train, cfg.eval, cfg.width, cfg.batch, cfg.epochs,
+        dump ? 0 : Math.min(8, Math.floor(cfg.train / 4)), dump
     );
     if (rc !== 0) {
         throw new Error("Flow browser configuration rejected parameters: " + rc);

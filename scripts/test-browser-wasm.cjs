@@ -22,7 +22,7 @@ async function start(factoryName, lines) {
 }
 
 function run(mod, dump) {
-    assert.equal(mod._flow_web_configure(16, 8, 2, 2, 1, 0, dump), 0);
+    assert.equal(mod._flow_web_configure(16, 8, 2, 2, 1, dump ? 0 : 4, dump), 0);
     const code = mod.callMain([]);
     assert.ok(code === 0 || code === undefined, "Nonzero Flow main return " + code);
 }

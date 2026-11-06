@@ -36,7 +36,7 @@ The UI supports 16/32/64 training images, 8/16/32 test images, width 2/4,
 batch 2/4/8 and 1/2/3 epochs. This is a correctness-oriented smoke experiment,
 not a statistically useful CIFAR-10 benchmark or a reproduction of upstream
 HLB's 94% A100 result. Predictions may be close to chance because of the
-tiny training set. Avoid tuning hyperparameters on the official test subset.
+tiny training set. Each training run now uses a small holdout from the training split for its per-epoch validation curves. The official test subset is only evaluated in the final standalone Flow inference pass; do not tune hyperparameters against that test set.
 
 CIFAR-10: Krizhevsky, Nair and Hinton, University of Toronto.
 Official source: https://www.cs.toronto.edu/~kriz/cifar.html
