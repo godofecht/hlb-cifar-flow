@@ -22,6 +22,11 @@ jobs:
       - uses: emscripten-core/setup-emsdk@v16
         with:
           version: '4.0.15'
+      - name: Validate browser JavaScript syntax
+        run: |
+          node --check web/app.js
+          node --check web/trainer.worker.js
+          node --check scripts/test-browser-wasm.cjs
       - name: Check Emscripten
         run: emcc --version
       - name: Checkout pinned native Flow compiler
@@ -34,14 +39,14 @@ jobs:
         run: |
           ../flow/flow compile train.flow
           ../flow/flow compile infer.flow
-          test -s build/train.c
-          test -s build/infer.c
+          test -s ../flow/build/train.c
+          test -s ../flow/build/infer.c
       - name: Build actual Flow WASM modules
         run: |
           mkdir -p site
           for program in train infer; do
             if [ "$program" = "train" ]; then factory=createFlowTrainer; else factory=createFlowInference; fi
-            emcc "build/$program.c" web/config.c ../flow/runtime/flow_rt_support.c \
+            emcc "../flow/build/$program.c" web/config.c ../flow/runtime/flow_rt_support.c \
               -O2 -o "site/$program.js" \
               -sWASM=1 -sMODULARIZE=1 -sEXPORT_NAME="$factory" \
               -sENVIRONMENT=web,worker,node -sINVOKE_RUN=0 \
